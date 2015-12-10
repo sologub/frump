@@ -15,6 +15,10 @@ This tool aims to solve these very problems: when you clone a repo that uses
 Frump then you get not only the code but also all current and past tasks 
 with their full history. 
 
+## Why "frump"?
+
+Because with git they make a lovely couple.
+
 ## How?
 
 Frump aims to be simple and human readable, so Markdown is selected as the 
