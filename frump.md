@@ -12,7 +12,7 @@ Describe in README.md Tasks.md's philosophy, format and usage scenarios.
 _Status: working, assigned to Ruslan_  
 
 Comments:
-> Ruslan: Possible we need dedicated docs files, not sure though.   
+> Ruslan: Possible we need dedicated docs files, not sure though.  
 
 ### Task 4 - Recommend for _Header_ to include info about Frump
 File _frump.md_ is not a good place for project's description, as
