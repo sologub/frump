@@ -9,7 +9,6 @@ use task::Task;
 
 fn get_task_lines(lines: Lines) -> Vec<Vec<&str>> {
     let mut result = vec![];
-
     let mut task_lines = vec![];
     let mut is_inside_task_section = false;
     let mut is_inside_task = false;
@@ -35,7 +34,7 @@ fn get_task_lines(lines: Lines) -> Vec<Vec<&str>> {
 
     // add last task
     if task_lines.len() > 0 {
-        result.push(task_lines.clone());
+        result.push(task_lines);
     }
 
     result
@@ -60,5 +59,4 @@ fn main() {
     for task in tasks {
         println!("{:?}", task.title);
     }
-
 }
