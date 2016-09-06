@@ -21,5 +21,5 @@ Recommend to store in Frump's _Header_ some info about the _frump.md_ file,
 instead of project's description.  
 _Status: working_
 
-
- 
+### Task 5 - Write about tasks IDs
+Write how tasks IDs must be formatted, and eventual implications.
