@@ -40,23 +40,25 @@ fn get_task_lines(lines: Lines) -> Vec<Vec<&str>> {
     result
 }
 
-fn load_tasks(filename: String) -> Vec<Task> {
-    let mut file = File::open(filename).unwrap();
-    let mut body = String::new();
-    file.read_to_string(&mut body).unwrap();
-
+fn load_tasks(file_body: String) -> Vec<Task> {
     let mut tasks = vec![];
-    let lines = get_task_lines(body.lines());
+    let lines = get_task_lines(file_body.lines());
 
     for task_lines in lines {
-        tasks.push(Task::new(task_lines[0].to_string()));
+        tasks.push(Task::new(&task_lines));
     }
     tasks
 }
 
 fn main() {
-    let tasks = load_tasks("frump.md".to_string());
+    let file_name = "frump.md".to_string();
+
+    let mut file = File::open(file_name).unwrap();
+    let mut file_body = String::new();
+    file.read_to_string(&mut file_body).unwrap();
+
+    let tasks = load_tasks(file_body);
     for task in tasks {
-        println!("{:?}", task.title);
+        println!("{} {} - {}", task.task_type, task.id, task.title);
     }
 }
