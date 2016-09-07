@@ -13,7 +13,7 @@ fn get_task_lines(lines: Lines) -> Vec<Vec<&str>> {
     let mut is_inside_task_section = false;
     let mut is_inside_task = false;
 
-    for (_, line) in lines.enumerate() {
+    for line in lines {
         if line.trim().to_uppercase().starts_with("## TASKS") {
             is_inside_task_section = true;
         } else if line.trim().starts_with("## ") {
@@ -24,8 +24,8 @@ fn get_task_lines(lines: Lines) -> Vec<Vec<&str>> {
             }
             if is_inside_task {
                 if line.trim().starts_with("### ") && task_lines.len() > 0 {
-                    result.push(task_lines.clone());
-                    task_lines.clear();
+                    result.push(task_lines);
+                    task_lines = vec![];
                 }
                 task_lines.push(line);
             }
@@ -40,16 +40,6 @@ fn get_task_lines(lines: Lines) -> Vec<Vec<&str>> {
     result
 }
 
-fn load_tasks(file_body: String) -> Vec<Task> {
-    let mut tasks = vec![];
-    let lines = get_task_lines(file_body.lines());
-
-    for task_lines in lines {
-        tasks.push(Task::new(&task_lines));
-    }
-    tasks
-}
-
 fn main() {
     let file_name = "frump.md".to_string();
 
@@ -57,7 +47,11 @@ fn main() {
     let mut file_body = String::new();
     file.read_to_string(&mut file_body).unwrap();
 
-    let tasks = load_tasks(file_body);
+    let tasks = get_task_lines(file_body.lines())
+        .into_iter()
+        .map(|task_lines| Task::new(&task_lines))
+        .collect::<Vec<_>>();
+
     for task in tasks {
         println!("{} {} - {}", task.task_type, task.id, task.title);
     }
