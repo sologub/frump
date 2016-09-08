@@ -60,10 +60,33 @@ heading element, followed by a list of all team members with emails and roles:
 ## Team
 * John Doe <john@example.com> - Project Manager
 * Ivan Smith <smith@example.com> - Developer
-```    
+```
 The first team member in the team list is used as the default task assignee,
 when not explicitly specified in task, so usually there is placed the leader
 of the team.  
 
 If your team is big then it is good practice to place this section at the end
 of the file, as Frump does not impose any ordering of its sections.
+
+### Tasks Section
+
+The _Tasks_ section starts with a `## Tasks` heading element followed by any
+number of task items. A task item starts with a level 3 heading which contains
+the task's ID, type and subject. Then in a new line follow the optional body
+and properties:
+```
+### Task 3 - Write docs
+Describe in README.md Tasks.md's philosophy, format and usage scenarios.  
+_Status: working, assigned to Ruslan_
+```
+Here the ID is `3`, type is `Task` and subject is `Write docs`. The ID must be
+a unique positive integer number. The type of a task can be anything, just try
+to use a small and consistent set of possible values, like `Task`, `Bug`,
+`Issue`. The subject is required and is not a title, so it shouldn't be
+capitalized.  
+
+The _body_ is everything following the _heading_, and then start the
+_properties_. A property starts with an underscore `_` followed by a property
+name and value, separated by a `:` symbol and ends with another underscore.
+The underscores are required because otherwise it won't be easy to
+automatically distinguish them from the body.
