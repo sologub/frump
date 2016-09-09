@@ -14,6 +14,3 @@ _Status: working, assigned to Ruslan_
 
 Comments:
 > Ruslan: Possible we need dedicated docs files, not sure though.  
-
-### Task 5 - Write about tasks IDs
-Write how tasks IDs must be formatted, and eventual implications.

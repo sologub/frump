@@ -49,7 +49,7 @@ The format of the `frump.md` file is Markdown with a few conventions.
 At the beginning of the file optionally starts the _Header_ section which is
 any well formatted Markdown text that does not contain a size 2 heading element
 (`##` in Markdown) with text `Team` or `Tasks` inside.  
-In the header it is recommended to have only the title of the project with a 
+In the header it is recommended to have only the title of the project with a
 brief description of Frump, so a clueless reader will understand what they see.
 
 ### Team Section
@@ -90,3 +90,13 @@ _properties_. A property starts with an underscore `_` followed by a property
 name and value, separated by a `:` symbol and ends with another underscore.
 The underscores are required because otherwise it won't be easy to
 automatically distinguish them from the body.
+
+#### Task ID
+A task ID in Frump is a positive ordered integer. The first ID must have a
+value of `1`, the next one will be `2`, etc. If a conflict appears on
+`git merge` then the person (or tool) who performs the merge must change the
+IDs to solve it.  
+
+When adding a new task we have to find the biggest ID in use or used ever by
+inspecting the frump.md file and its git history and assign the new task ID an
+incremented value.
