@@ -50,7 +50,7 @@ At the beginning of the file optionally starts the _Header_ section which is
 any well formatted Markdown text that does not contain a size 2 heading element
 (`##` in Markdown) with text `Team` or `Tasks` inside.  
 In the header it is recommended to have only the title of the project with a 
-brief description, so you won't have to scroll too much down to see the tasks.
+brief description of Frump, so a clueless reader will understand what they see.
 
 ### Team Section
 
