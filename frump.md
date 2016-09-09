@@ -8,9 +8,7 @@ visit the [Frump Project's](https://github.com/sologub/frump) home page.
 
 ## Tasks
 
-### Task 3 - Write docs
-Describe in README.md Tasks.md's philosophy, format and usage scenarios.  
-_Status: working, assigned to Ruslan_  
-
-Comments:
-> Ruslan: Possible we need dedicated docs files, not sure though.  
+### Task 6 - Implement task subject parsing
+### Task 7 - Define task properties and specify the predefined ones
+### Task 8 - Implement task properties parsing
+### Task 9 - Implement multiline task properties
