@@ -12,3 +12,7 @@ visit the [Frump Project's](https://github.com/sologub/frump) home page.
 ### Task 7 - Define task properties and specify the predefined ones
 ### Task 8 - Implement task properties parsing
 ### Task 9 - Implement multiline task properties
+
+### Task 10 - Add some usage scenarios
+Describe how adding and modifying tasks should be combined with git commits for
+a better history visualization later.
