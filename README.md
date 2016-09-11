@@ -1,6 +1,7 @@
 # Frump
 
-Distributed tasks management tool based on Git and Markdown.
+Distributed tasks management tool based on Git and Markdown. Currently Frump is
+work in progress and not production ready.
 
 ## Why?
 
