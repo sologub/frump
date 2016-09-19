@@ -1,0 +1,14 @@
+{
+  "globalDependencies": {
+    "electron": "registry:env/electron#0.37.6+20160909065630",
+    "moment": "registry:dt/moment#2.11.1+20160829143156",
+    "node": "registry:dt/node#6.0.0+20160915134512",
+    "react-router": "registry:dt/react-router#2.0.0+20160919181133",
+    "string": "registry:dt/string#0.0.0+20160316155526"
+  },
+  "dependencies": {
+    "line-input-stream": "registry:npm/line-input-stream#1.0.1+20160723033700",
+    "react": "registry:npm/react#15.0.1+20160601175240",
+    "react-dom": "registry:npm/react-dom#15.0.1+20160826174104"
+  }
+}

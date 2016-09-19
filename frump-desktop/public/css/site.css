@@ -1,0 +1,5 @@
+@media (min-width: 544px){
+    .padding-sm-vertical { padding-top: 15px; padding-bottom: 15px; }
+    .padding-sm-top { padding-top: 15px; }
+    .padding-sm-bottom { padding-bottom: 15px; }
+}
