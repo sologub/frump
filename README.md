@@ -78,7 +78,8 @@ and properties:
 ```
 ### Task 3 - Write docs
 Describe in README.md Tasks.md's philosophy, format and usage scenarios.  
-_Status: working, assigned to Ruslan_
+Status: working, assigned to Ruslan
+Tags: docs
 ```
 Here the ID is `3`, type is `Task` and subject is `Write docs`. The ID must be
 a unique positive integer number. The type of a task can be anything, just try
@@ -87,10 +88,7 @@ to use a small and consistent set of possible values, like `Task`, `Bug`,
 capitalized.  
 
 The _body_ is everything following the _heading_, and then start the
-_properties_. A property starts with an underscore `_` followed by a property
-name and value, separated by a `:` symbol and ends with another underscore.
-The underscores are required because otherwise it won't be easy to
-automatically distinguish them from the body.
+_properties_.
 
 #### Task ID
 A task ID in Frump is a positive ordered integer. The first ID must have a
@@ -101,3 +99,9 @@ IDs to solve it.
 When adding a new task we have to find the biggest ID in use or used ever by
 inspecting the frump.md file and its git history and assign the new task ID an
 incremented value.
+
+#### Properties
+A property is a name/value pair separated by a `:` symbol. The name of the
+property must be capitalized and can consist of maximum 3 words. If the name
+starts with a lower case character or is more than 3 words long then it is
+considered not a property but part of the task's body.
