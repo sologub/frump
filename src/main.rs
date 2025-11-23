@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
 
-use frump::{parser, ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskType};
+use frump::{export_csv, export_json, import_json, parser, ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskType};
 
 #[derive(Parser)]
 #[command(name = "frump")]
@@ -126,6 +126,27 @@ enum Commands {
 
     /// Validate frump.md file
     Validate,
+
+    /// Export tasks to JSON or CSV
+    Export {
+        /// Output format
+        #[arg(short, long, default_value = "json")]
+        format: String,
+
+        /// Output file (stdout if not specified)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Import tasks from JSON
+    Import {
+        /// Input file
+        file: PathBuf,
+
+        /// Merge with existing tasks instead of replacing
+        #[arg(short, long)]
+        merge: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -555,6 +576,82 @@ fn main() -> Result<()> {
                 Err(e) => {
                     println!("✗ Validation failed: {}", e);
                 }
+            }
+        }
+
+        Commands::Export { format, output } => {
+            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
+            let doc = parser::parse(&content)?;
+
+            let exported = match format.to_lowercase().as_str() {
+                "json" => export_json(&doc)?,
+                "csv" => export_csv(&doc)?,
+                _ => {
+                    println!("Error: Unknown format '{}'. Supported formats: json, csv", format);
+                    return Ok(());
+                }
+            };
+
+            if let Some(output_path) = output {
+                fs::write(output_path, &exported)
+                    .context("Failed to write output file")?;
+                println!("Exported {} tasks to {:?}", doc.tasks.len(), output_path);
+            } else {
+                println!("{}", exported);
+            }
+        }
+
+        Commands::Import { file, merge } => {
+            let import_content = fs::read_to_string(file)
+                .context("Failed to read import file")?;
+
+            let imported_doc = import_json(&import_content)?;
+
+            if *merge {
+                // Merge: add imported tasks to existing document
+                let current_content = fs::read_to_string(&cli.file)
+                    .context("Failed to read current frump.md")?;
+                let mut current_doc = parser::parse(&current_content)?;
+
+                // Find next available ID
+                let mut next_id = current_doc.tasks.max_id()
+                    .map(|id| id.value() + 1)
+                    .unwrap_or(1);
+
+                // Add imported tasks with new IDs
+                let mut added = 0;
+                for task in imported_doc.tasks.tasks() {
+                    let new_id = TaskId::new(next_id)?;
+                    let mut new_task = Task::new(
+                        new_id,
+                        task.task_type.clone(),
+                        task.subject.clone(),
+                    );
+                    new_task.set_body(task.body.clone());
+
+                    for prop in &task.properties {
+                        new_task.add_property(prop.key.clone(), prop.value.clone());
+                    }
+
+                    current_doc.tasks.add(new_task);
+                    next_id += 1;
+                    added += 1;
+                }
+
+                let new_content = parser::serialize(&current_doc);
+                fs::write(&cli.file, new_content)
+                    .context("Failed to write frump.md")?;
+
+                println!("Merged {} tasks into frump.md", added);
+            } else {
+                // Replace: overwrite with imported document
+                let new_content = parser::serialize(&imported_doc);
+                fs::write(&cli.file, new_content)
+                    .context("Failed to write frump.md")?;
+
+                println!("Imported {} tasks, {} team members",
+                         imported_doc.tasks.len(),
+                         imported_doc.team.len());
             }
         }
     }
