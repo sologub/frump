@@ -96,6 +96,36 @@ enum Commands {
 
     /// List all closed (deleted) tasks
     Closed,
+
+    /// Update a task's subject or body
+    Update {
+        /// Task ID
+        id: u32,
+
+        /// New subject (optional)
+        #[arg(long)]
+        subject: Option<String>,
+
+        /// New body (optional)
+        #[arg(long)]
+        body: Option<String>,
+    },
+
+    /// Search tasks by keyword
+    Search {
+        /// Search query
+        query: String,
+
+        /// Search in body as well as subject
+        #[arg(short, long)]
+        full: bool,
+    },
+
+    /// Show task statistics
+    Stats,
+
+    /// Validate frump.md file
+    Validate,
 }
 
 fn main() -> Result<()> {
@@ -319,6 +349,212 @@ fn main() -> Result<()> {
                     println!("{} {} - {}", task_type, id, subject);
                 }
                 println!("\nTotal: {} closed tasks", deleted.len());
+            }
+        }
+
+        Commands::Update { id, subject, body } => {
+            if subject.is_none() && body.is_none() {
+                println!("Error: At least one of --subject or --body must be provided");
+                return Ok(());
+            }
+
+            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
+            let mut doc = parser::parse(&content)?;
+
+            let task_id = TaskId::new(*id)?;
+            if let Some(task) = doc.tasks.find_by_id_mut(task_id) {
+                if let Some(new_subject) = subject {
+                    task.subject = new_subject.clone();
+                    println!("Updated subject for task {}", id);
+                }
+                if let Some(new_body) = body {
+                    task.set_body(new_body.clone());
+                    println!("Updated body for task {}", id);
+                }
+
+                let new_content = parser::serialize(&doc);
+                fs::write(&cli.file, new_content).context("Failed to write frump.md file")?;
+            } else {
+                println!("Task {} not found.", id);
+            }
+        }
+
+        Commands::Search { query, full } => {
+            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
+            let doc = parser::parse(&content)?;
+
+            let query_lower = query.to_lowercase();
+            let mut found = Vec::new();
+
+            for task in doc.tasks.tasks() {
+                let mut matches = false;
+
+                // Search in subject
+                if task.subject.to_lowercase().contains(&query_lower) {
+                    matches = true;
+                }
+
+                // Search in body if --full flag is set
+                if *full && task.body.to_lowercase().contains(&query_lower) {
+                    matches = true;
+                }
+
+                if matches {
+                    found.push(task);
+                }
+            }
+
+            if found.is_empty() {
+                println!("No tasks found matching '{}'", query);
+            } else {
+                println!("Found {} task(s) matching '{}':\n", found.len(), query);
+                for task in found {
+                    println!("{} {} - {}", task.task_type, task.id, task.subject);
+                    if *full && !task.body.is_empty() {
+                        // Show a snippet of the body
+                        let snippet = task.body.lines().take(2).collect::<Vec<_>>().join(" ");
+                        let truncated = if snippet.len() > 80 {
+                            format!("{}...", &snippet[..80])
+                        } else {
+                            snippet
+                        };
+                        println!("  {}", truncated);
+                    }
+                }
+            }
+        }
+
+        Commands::Stats => {
+            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
+            let doc = parser::parse(&content)?;
+
+            let total = doc.tasks.len();
+
+            // Count by type
+            let mut type_counts = std::collections::HashMap::new();
+            for task in doc.tasks.tasks() {
+                *type_counts.entry(task.task_type.as_str()).or_insert(0) += 1;
+            }
+
+            // Count by status
+            let mut status_counts = std::collections::HashMap::new();
+            let mut no_status = 0;
+            for task in doc.tasks.tasks() {
+                if let Some(status) = task.status() {
+                    *status_counts.entry(status).or_insert(0) += 1;
+                } else {
+                    no_status += 1;
+                }
+            }
+
+            // Count by assignee
+            let mut assignee_counts = std::collections::HashMap::new();
+            let mut no_assignee = 0;
+            for task in doc.tasks.tasks() {
+                if let Some(assignee) = task.assignee() {
+                    *assignee_counts.entry(assignee).or_insert(0) += 1;
+                } else {
+                    no_assignee += 1;
+                }
+            }
+
+            println!("Task Statistics\n");
+            println!("Total tasks: {}\n", total);
+
+            println!("By Type:");
+            let mut types: Vec<_> = type_counts.iter().collect();
+            types.sort_by_key(|(_, count)| std::cmp::Reverse(**count));
+            for (task_type, count) in types {
+                println!("  {}: {}", task_type, count);
+            }
+
+            println!("\nBy Status:");
+            if !status_counts.is_empty() {
+                let mut statuses: Vec<_> = status_counts.iter().collect();
+                statuses.sort_by_key(|(_, count)| std::cmp::Reverse(**count));
+                for (status, count) in statuses {
+                    println!("  {}: {}", status, count);
+                }
+            }
+            if no_status > 0 {
+                println!("  (no status): {}", no_status);
+            }
+
+            println!("\nBy Assignee:");
+            if !assignee_counts.is_empty() {
+                let mut assignees: Vec<_> = assignee_counts.iter().collect();
+                assignees.sort_by_key(|(_, count)| std::cmp::Reverse(**count));
+                for (assignee, count) in assignees {
+                    println!("  {}: {}", assignee, count);
+                }
+            }
+            if no_assignee > 0 {
+                println!("  (no assignee): {}", no_assignee);
+            }
+
+            // Optional: show closed tasks count if in git repo
+            if let Ok(repo) = FrumpRepo::open(".") {
+                if let Ok(deleted) = repo.deleted_tasks() {
+                    println!("\nClosed tasks: {}", deleted.len());
+                }
+            }
+        }
+
+        Commands::Validate => {
+            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
+
+            match parser::parse(&content) {
+                Ok(doc) => {
+                    println!("✓ File structure is valid");
+
+                    // Check for duplicate IDs
+                    let mut ids = std::collections::HashSet::new();
+                    let mut duplicates = Vec::new();
+                    for task in doc.tasks.tasks() {
+                        if !ids.insert(task.id) {
+                            duplicates.push(task.id);
+                        }
+                    }
+
+                    if !duplicates.is_empty() {
+                        println!("✗ Found duplicate task IDs: {:?}", duplicates);
+                    } else {
+                        println!("✓ All task IDs are unique");
+                    }
+
+                    // Check for sequential IDs
+                    let mut ids_vec: Vec<_> = doc.tasks.tasks().iter().map(|t| t.id.value()).collect();
+                    ids_vec.sort();
+                    let mut gaps = Vec::new();
+                    for i in 1..ids_vec.len() {
+                        if ids_vec[i] > ids_vec[i - 1] + 1 {
+                            gaps.push((ids_vec[i - 1] + 1, ids_vec[i] - 1));
+                        }
+                    }
+
+                    if !gaps.is_empty() {
+                        println!("⚠ ID gaps found (possibly closed tasks):");
+                        for (start, end) in gaps {
+                            if start == end {
+                                println!("  ID {}", start);
+                            } else {
+                                println!("  IDs {}-{}", start, end);
+                            }
+                        }
+                    } else {
+                        println!("✓ Task IDs are sequential");
+                    }
+
+                    // Validate team emails
+                    // Email is already validated by the Email type during parsing
+
+                    println!("\n✓ Validation complete: {} tasks, {} team members",
+                             doc.tasks.len(),
+                             doc.team.len());
+                }
+                Err(e) => {
+                    println!("✗ Validation failed: {}", e);
+                }
             }
         }
     }
