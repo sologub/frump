@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
 
-use frump::{export_csv, export_json, import_json, parser, ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskType};
+use frump::{export_csv, export_json, import_json, parser, ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskType, TaskTemplate, TemplateManager};
 
 #[derive(Parser)]
 #[command(name = "frump")]
@@ -146,6 +146,83 @@ enum Commands {
         /// Merge with existing tasks instead of replacing
         #[arg(short, long)]
         merge: bool,
+    },
+
+    /// Manage task templates
+    Template {
+        #[command(subcommand)]
+        action: TemplateAction,
+    },
+
+    /// Bulk operations on tasks
+    Bulk {
+        #[command(subcommand)]
+        action: BulkAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum TemplateAction {
+    /// Add a new template
+    Add {
+        /// Template name
+        name: String,
+
+        /// Task type
+        #[arg(short = 't', long, default_value = "Task")]
+        task_type: String,
+
+        /// Subject template (use {placeholder} for variables)
+        subject: String,
+
+        /// Body template (optional)
+        #[arg(short, long)]
+        body: Option<String>,
+    },
+
+    /// List all templates
+    List,
+
+    /// Remove a template
+    Remove {
+        /// Template name
+        name: String,
+    },
+
+    /// Show template details
+    Show {
+        /// Template name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum BulkAction {
+    /// Close multiple tasks by status
+    CloseByStatus {
+        /// Status to close
+        status: String,
+    },
+
+    /// Assign multiple tasks to a person
+    AssignByType {
+        /// Task type to assign
+        task_type: String,
+
+        /// Assignee name
+        assignee: String,
+    },
+
+    /// Set property on multiple tasks
+    SetByStatus {
+        /// Status to filter
+        status: String,
+
+        /// Property to set
+        property: String,
+
+        /// Property value
+        value: String,
     },
 }
 
@@ -652,6 +729,141 @@ fn main() -> Result<()> {
                 println!("Imported {} tasks, {} team members",
                          imported_doc.tasks.len(),
                          imported_doc.team.len());
+            }
+        }
+
+        Commands::Template { action } => {
+            let manager = TemplateManager::new();
+
+            match action {
+                TemplateAction::Add { name, task_type, subject, body } => {
+                    let template = TaskTemplate {
+                        name: name.clone(),
+                        task_type: task_type.clone(),
+                        subject_template: subject.clone(),
+                        body_template: body.clone().unwrap_or_default(),
+                        properties: std::collections::HashMap::new(),
+                    };
+
+                    manager.add(template)?;
+                    println!("Added template '{}'", name);
+                }
+
+                TemplateAction::List => {
+                    let templates = manager.list()?;
+
+                    if templates.is_empty() {
+                        println!("No templates found.");
+                    } else {
+                        println!("Available templates:\n");
+                        for template in templates {
+                            println!("{} ({})", template.name, template.task_type);
+                            println!("  Subject: {}", template.subject_template);
+                            if !template.body_template.is_empty() {
+                                println!("  Body: {}", template.body_template);
+                            }
+                            println!();
+                        }
+                    }
+                }
+
+                TemplateAction::Remove { name } => {
+                    manager.remove(name)?;
+                    println!("Removed template '{}'", name);
+                }
+
+                TemplateAction::Show { name } => {
+                    let template = manager.get(name)?;
+                    println!("Template: {}", template.name);
+                    println!("Type: {}", template.task_type);
+                    println!("Subject: {}", template.subject_template);
+                    if !template.body_template.is_empty() {
+                        println!("Body: {}", template.body_template);
+                    }
+                    if !template.properties.is_empty() {
+                        println!("Properties:");
+                        for (key, value) in &template.properties {
+                            println!("  {}: {}", key, value);
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::Bulk { action } => {
+            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
+            let mut doc = parser::parse(&content)?;
+
+            match action {
+                BulkAction::CloseByStatus { status } => {
+                    let tasks_to_close: Vec<TaskId> = doc
+                        .tasks
+                        .tasks()
+                        .iter()
+                        .filter(|t| t.status().map(|s| s == status).unwrap_or(false))
+                        .map(|t| t.id)
+                        .collect();
+
+                    if tasks_to_close.is_empty() {
+                        println!("No tasks found with status '{}'", status);
+                        return Ok(());
+                    }
+
+                    let count = tasks_to_close.len();
+                    for id in tasks_to_close {
+                        doc.tasks.remove(id);
+                    }
+
+                    let new_content = parser::serialize(&doc);
+                    fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
+
+                    println!("Closed {} task(s) with status '{}'", count, status);
+                }
+
+                BulkAction::AssignByType { task_type, assignee } => {
+                    let filter_type = TaskType::parse(task_type);
+                    let mut count = 0;
+
+                    for task in doc.tasks.tasks_mut() {
+                        if task.task_type == filter_type {
+                            task.set_assignee(assignee.clone());
+                            count += 1;
+                        }
+                    }
+
+                    if count == 0 {
+                        println!("No tasks found with type '{}'", task_type);
+                        return Ok(());
+                    }
+
+                    let new_content = parser::serialize(&doc);
+                    fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
+
+                    println!("Assigned {} task(s) of type '{}' to {}", count, task_type, assignee);
+                }
+
+                BulkAction::SetByStatus { status, property, value } => {
+                    let prop_key = PropertyKey::new(property)?;
+                    let mut count = 0;
+
+                    for task in doc.tasks.tasks_mut() {
+                        if task.status().map(|s| s == status).unwrap_or(false) {
+                            task.set_property(prop_key.clone(), value.clone());
+                            count += 1;
+                        }
+                    }
+
+                    if count == 0 {
+                        println!("No tasks found with status '{}'", status);
+                        return Ok(());
+                    }
+
+                    let new_content = parser::serialize(&doc);
+                    fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
+
+                    println!("Set {} = {} on {} task(s) with status '{}'",
+                             property, value, count, status);
+                }
             }
         }
     }
