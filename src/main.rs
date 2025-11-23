@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
 
-use frump::{parser, PropertyKey, Task, TaskId, TaskType};
+use frump::{parser, ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskType};
 
 #[derive(Parser)]
 #[command(name = "frump")]
@@ -87,6 +87,15 @@ enum Commands {
         /// Property value
         value: String,
     },
+
+    /// Show the history of a task
+    History {
+        /// Task ID
+        id: u32,
+    },
+
+    /// List all closed (deleted) tasks
+    Closed,
 }
 
 fn main() -> Result<()> {
@@ -164,8 +173,26 @@ fn main() -> Result<()> {
             let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
             let mut doc = parser::parse(&content)?;
 
-            // Find the next available task ID
-            let next_id = doc.tasks.next_id();
+            // Find the next available task ID, considering git history
+            let next_id = if let Ok(repo) = FrumpRepo::open(".") {
+                if let Ok(Some(max_historical)) = repo.max_historical_id() {
+                    let current_max = doc.tasks.max_id();
+                    if let Some(current) = current_max {
+                        if max_historical > current {
+                            max_historical.next()
+                        } else {
+                            current.next()
+                        }
+                    } else {
+                        max_historical.next()
+                    }
+                } else {
+                    doc.tasks.next_id()
+                }
+            } else {
+                // Not in a git repo or can't open, use current max
+                doc.tasks.next_id()
+            };
 
             let mut new_task = Task::new(
                 next_id,
@@ -249,6 +276,49 @@ fn main() -> Result<()> {
                 println!("Set {} = {} on task {}", property, value, id);
             } else {
                 println!("Task {} not found.", id);
+            }
+        }
+
+        Commands::History { id } => {
+            let repo = FrumpRepo::open(".").context("Not in a git repository")?;
+            let task_id = TaskId::new(*id)?;
+            let history = repo.task_history(task_id)?;
+
+            if history.commits.is_empty() {
+                println!("No history found for task {}", id);
+            } else {
+                println!("History for Task {}:\n", id);
+                for commit in &history.commits {
+                    let change_icon = match commit.change_type {
+                        ChangeType::Created => "✓ Created",
+                        ChangeType::Modified => "• Modified",
+                        ChangeType::Deleted => "✗ Deleted",
+                    };
+
+                    println!("{} by {} on {}", change_icon, commit.author, commit.date.format("%Y-%m-%d %H:%M"));
+                    println!("  Commit: {}", &commit.hash[..8]);
+                    if !commit.message.is_empty() {
+                        // Show first line of commit message
+                        let first_line = commit.message.lines().next().unwrap_or("");
+                        println!("  Message: {}", first_line);
+                    }
+                    println!();
+                }
+            }
+        }
+
+        Commands::Closed => {
+            let repo = FrumpRepo::open(".").context("Not in a git repository")?;
+            let deleted = repo.deleted_tasks()?;
+
+            if deleted.is_empty() {
+                println!("No closed tasks found.");
+            } else {
+                println!("Closed tasks:\n");
+                for (id, task_type, subject) in &deleted {
+                    println!("{} {} - {}", task_type, id, subject);
+                }
+                println!("\nTotal: {} closed tasks", deleted.len());
             }
         }
     }
