@@ -10,7 +10,7 @@ but a problem is usually left unsolved: they keep all tasks and their flow
 outside Git, so it is hard to have a full picture of project's status and past
 development only by looking at Git log.  
 The next unsolved problem is that while your code is in a distributed system,
-your tasks are not, preventing a team form a truly distributed collaboration.  
+your tasks are not, preventing a team from a truly distributed collaboration.  
 
 This tool aims to solve these very problems: when you clone a repo that uses 
 Frump then you get not only the code but also all current and past tasks 
@@ -77,7 +77,7 @@ the task's ID, type and subject. Then in a new line follow the optional body
 and properties:
 ```
 ### Task 3 - Write docs
-Describe in README.md Tasks.md's philosophy, format and usage scenarios.  
+Describe in README.md Frump's philosophy, format and usage scenarios.
 Status: working, assigned to Ruslan
 Tags: docs
 ```
@@ -87,8 +87,7 @@ to use a small and consistent set of possible values, like `Task`, `Bug`,
 `Issue`. The subject is required and is not a title, so it shouldn't be
 capitalized.  
 
-The _body_ is everything following the _heading_, and then start the
-_properties_.
+The _body_ is everything following the _heading_ until the _properties_ start.
 
 #### Task ID
 A task ID in Frump is a positive ordered integer. The first ID must have a
