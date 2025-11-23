@@ -1,58 +1,117 @@
-pub mod task;
-pub mod author;
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use std::fs;
+use std::path::PathBuf;
 
-use std::io::prelude::*;
-use std::str::*;
-use std::fs::File;
+mod parser;
+use parser::{FrumpDoc, Task};
 
-use task::Task;
+#[derive(Parser)]
+#[command(name = "frump")]
+#[command(about = "Distributed task management tool based on Git and Markdown", long_about = None)]
+struct Cli {
+    #[arg(short, long, default_value = "frump.md")]
+    file: PathBuf,
 
-fn get_task_lines(lines: Lines) -> Vec<Vec<&str>> {
-    let mut result = vec![];
-    let mut task_lines = vec![];
-    let mut is_inside_task_section = false;
-    let mut is_inside_task = false;
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    for line in lines {
-        if line.trim().to_uppercase().starts_with("## TASKS") {
-            is_inside_task_section = true;
-        } else if line.trim().starts_with("## ") {
-            is_inside_task_section = false;
-        } else if is_inside_task_section {
-            if line.trim().starts_with("### ") {
-                is_inside_task = true;
-            }
-            if is_inside_task {
-                if line.trim().starts_with("### ") && task_lines.len() > 0 {
-                    result.push(task_lines);
-                    task_lines = vec![];
+#[derive(Subcommand)]
+enum Commands {
+    /// List all tasks
+    List,
+
+    /// Show details of a specific task
+    Show {
+        /// Task ID
+        id: u32,
+    },
+
+    /// Add a new task
+    Add {
+        /// Task type (e.g., Task, Bug, Issue)
+        #[arg(short, long, default_value = "Task")]
+        task_type: String,
+
+        /// Task subject/title
+        subject: String,
+
+        /// Task body/description (optional)
+        #[arg(short, long)]
+        body: Option<String>,
+    },
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match &cli.command {
+        Commands::List => {
+            let content = fs::read_to_string(&cli.file)
+                .context("Failed to read frump.md file")?;
+            let doc = FrumpDoc::parse(&content)?;
+
+            if doc.tasks.is_empty() {
+                println!("No tasks found.");
+            } else {
+                for task in &doc.tasks {
+                    println!("{} {} - {}", task.task_type, task.id, task.subject);
+                    if let Some(status) = &task.properties.get("Status") {
+                        println!("  Status: {}", status);
+                    }
                 }
-                task_lines.push(line);
             }
+        }
+
+        Commands::Show { id } => {
+            let content = fs::read_to_string(&cli.file)
+                .context("Failed to read frump.md file")?;
+            let doc = FrumpDoc::parse(&content)?;
+
+            if let Some(task) = doc.tasks.iter().find(|t| t.id == *id) {
+                println!("### {} {} - {}\n", task.task_type, task.id, task.subject);
+
+                if !task.body.is_empty() {
+                    println!("{}\n", task.body);
+                }
+
+                if !task.properties.is_empty() {
+                    for (key, value) in &task.properties {
+                        println!("{}: {}", key, value);
+                    }
+                }
+            } else {
+                println!("Task {} not found.", id);
+            }
+        }
+
+        Commands::Add { task_type, subject, body } => {
+            let content = fs::read_to_string(&cli.file)
+                .context("Failed to read frump.md file")?;
+            let mut doc = FrumpDoc::parse(&content)?;
+
+            // Find the next available task ID
+            let next_id = doc.tasks.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+
+            let new_task = Task {
+                id: next_id,
+                task_type: task_type.clone(),
+                subject: subject.clone(),
+                body: body.clone().unwrap_or_default(),
+                properties: std::collections::HashMap::new(),
+            };
+
+            doc.tasks.push(new_task);
+
+            // Write back to file
+            let new_content = doc.to_string();
+            fs::write(&cli.file, new_content)
+                .context("Failed to write frump.md file")?;
+
+            println!("Added {} {} - {}", task_type, next_id, subject);
         }
     }
 
-    // add last task
-    if task_lines.len() > 0 {
-        result.push(task_lines);
-    }
-
-    result
-}
-
-fn main() {
-    let file_name = "frump.md".to_string();
-
-    let mut file = File::open(file_name).unwrap();
-    let mut file_body = String::new();
-    file.read_to_string(&mut file_body).unwrap();
-
-    let tasks = get_task_lines(file_body.lines())
-        .into_iter()
-        .map(|task_lines| Task::new(&task_lines))
-        .collect::<Vec<_>>();
-
-    for task in tasks {
-        println!("{} {} - {}", task.task_type, task.id, task.title);
-    }
+    Ok(())
 }
