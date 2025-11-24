@@ -159,6 +159,16 @@ enum Commands {
         #[command(subcommand)]
         action: BulkAction,
     },
+
+    /// Check for duplicate task IDs (merge conflicts)
+    CheckConflicts,
+
+    /// Resolve duplicate task IDs by renumbering
+    ResolveConflicts {
+        /// Automatically commit the resolution
+        #[arg(short, long)]
+        commit: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -864,6 +874,120 @@ fn main() -> Result<()> {
                     println!("Set {} = {} on {} task(s) with status '{}'",
                              property, value, count, status);
                 }
+            }
+        }
+
+        Commands::CheckConflicts => {
+            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
+            let doc = parser::parse(&content)?;
+
+            // Find duplicate IDs
+            let mut id_occurrences: std::collections::HashMap<TaskId, Vec<&Task>> = std::collections::HashMap::new();
+            for task in doc.tasks.tasks() {
+                id_occurrences.entry(task.id).or_insert_with(Vec::new).push(task);
+            }
+
+            let duplicates: Vec<_> = id_occurrences
+                .iter()
+                .filter(|(_, tasks)| tasks.len() > 1)
+                .collect();
+
+            if duplicates.is_empty() {
+                println!("✓ No duplicate task IDs found");
+                println!("✓ File is ready for merge");
+            } else {
+                println!("✗ Found {} duplicate task ID(s):\n", duplicates.len());
+                for (id, tasks) in duplicates {
+                    println!("ID {}:", id);
+                    for task in tasks {
+                        println!("  - {} {}: {}", task.task_type, id, task.subject);
+                    }
+                    println!();
+                }
+                println!("Run 'frump resolve-conflicts' to automatically renumber conflicts");
+            }
+        }
+
+        Commands::ResolveConflicts { commit } => {
+            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
+            let mut doc = parser::parse(&content)?;
+
+            // Find duplicate IDs
+            let mut id_occurrences: std::collections::HashMap<TaskId, Vec<usize>> = std::collections::HashMap::new();
+            for (idx, task) in doc.tasks.tasks().iter().enumerate() {
+                id_occurrences.entry(task.id).or_insert_with(Vec::new).push(idx);
+            }
+
+            let duplicates: Vec<_> = id_occurrences
+                .iter()
+                .filter(|(_, indices)| indices.len() > 1)
+                .collect();
+
+            if duplicates.is_empty() {
+                println!("✓ No duplicate task IDs found");
+                println!("Nothing to resolve.");
+                return Ok(());
+            }
+
+            // Find the maximum ID in the document
+            let max_id = doc.tasks.max_id().ok_or_else(|| anyhow::anyhow!("No tasks found"))?;
+            let mut next_id = max_id.next();
+
+            // Renumber conflicting tasks (keep first occurrence, renumber the rest)
+            let mut renumbered = Vec::new();
+            for (_dup_id, indices) in duplicates {
+                // Skip the first occurrence (keep original ID)
+                for &idx in indices.iter().skip(1) {
+                    let task = &mut doc.tasks.tasks_mut()[idx];
+                    let old_id = task.id;
+                    task.id = next_id;
+                    renumbered.push((old_id, next_id, task.subject.clone()));
+                    next_id = next_id.next();
+                }
+            }
+
+            // Write back to file
+            let new_content = parser::serialize(&doc);
+            fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
+
+            println!("✓ Resolved {} duplicate task ID(s):\n", renumbered.len());
+            for (old_id, new_id, subject) in &renumbered {
+                println!("  {} → {}: {}", old_id, new_id, subject);
+            }
+
+            if *commit {
+                // Create a git commit
+                let commit_message = format!(
+                    "Resolve task ID conflicts\n\nRenumbered {} conflicting task(s)",
+                    renumbered.len()
+                );
+
+                // Stage the frump.md file
+                let status = std::process::Command::new("git")
+                    .args(&["add", cli.file.to_str().unwrap()])
+                    .status()
+                    .context("Failed to stage file with git")?;
+
+                if !status.success() {
+                    println!("\n✗ Failed to stage changes");
+                    return Ok(());
+                }
+
+                // Create commit
+                let status = std::process::Command::new("git")
+                    .args(&["commit", "-m", &commit_message])
+                    .status()
+                    .context("Failed to create git commit")?;
+
+                if status.success() {
+                    println!("\n✓ Changes committed automatically");
+                } else {
+                    println!("\n⚠ Changes saved but commit failed");
+                    println!("You may need to commit manually");
+                }
+            } else {
+                println!("\nRemember to commit these changes.");
+                println!("Run with --commit flag to commit automatically.");
             }
         }
     }

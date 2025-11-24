@@ -1,7 +1,74 @@
+//! Markdown parser for Frump documents.
+//!
+//! This module provides functions to parse and serialize Frump documents in Markdown format.
+//!
+//! # Format
+//!
+//! A Frump document consists of:
+//! 1. A header section (markdown text)
+//! 2. A Team section listing team members
+//! 3. A Tasks section with task definitions
+//!
+//! # Example Markdown Format
+//!
+//! ```text
+//! # My Project
+//!
+//! ## Team
+//!
+//! * John Doe <john@example.com> - Developer
+//!
+//! ## Tasks
+//!
+//! ### Task 1 - Build authentication
+//!
+//! Implement login and registration.
+//! Status: working
+//! ```
+//!
+//! # Usage
+//!
+//! ```rust
+//! use frump::parser;
+//!
+//! let content = "# Project\n\n## Team\n\n## Tasks\n";
+//! let doc = parser::parse(content).unwrap();
+//! let serialized = parser::serialize(&doc);
+//! assert!(serialized.contains("# Project"));
+//! ```
+
 use anyhow::{anyhow, Result};
 
 use crate::domain::*;
 
+/// Parse a Frump document from Markdown format.
+///
+/// # Arguments
+///
+/// * `content` - The Markdown content to parse
+///
+/// # Returns
+///
+/// A `FrumpDoc` containing the parsed header, team, and tasks, or an error if parsing fails.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Task ID is invalid (zero or negative)
+/// - Property key doesn't meet validation rules
+/// - Team member email is invalid
+/// - Task format is malformed
+///
+/// # Example
+///
+/// ```rust
+/// use frump::parser;
+///
+/// let content = "# My Project\n\n## Team\n\n## Tasks\n";
+/// let doc = parser::parse(content).unwrap();
+/// assert_eq!(doc.tasks.len(), 0);  // No tasks in this example
+/// assert_eq!(doc.team.len(), 0);    // No team members in this example
+/// ```
 pub fn parse(content: &str) -> Result<FrumpDoc> {
     let mut header = String::new();
     let mut team_members = Vec::new();
@@ -70,6 +137,37 @@ pub fn parse(content: &str) -> Result<FrumpDoc> {
     Ok(FrumpDoc::new(header, team, task_collection))
 }
 
+/// Serialize a Frump document to Markdown format.
+///
+/// Converts a `FrumpDoc` back to the standard Markdown representation.
+/// This function is the inverse of `parse()` and should produce valid
+/// Markdown that can be parsed back.
+///
+/// # Arguments
+///
+/// * `doc` - The Frump document to serialize
+///
+/// # Returns
+///
+/// A `String` containing the Markdown representation of the document.
+///
+/// # Example
+///
+/// ```rust
+/// use frump::{parser, Task, TaskId, TaskType, TaskCollection, Team, FrumpDoc};
+///
+/// let tasks = vec![
+///     Task::new(TaskId::new(1).unwrap(), TaskType::Task, "Test task".to_string())
+/// ];
+/// let doc = FrumpDoc::new(
+///     "# Test\n".to_string(),
+///     Team::new(vec![]),
+///     TaskCollection::new(tasks)
+/// );
+///
+/// let markdown = parser::serialize(&doc);
+/// assert!(markdown.contains("### Task 1 - Test task"));
+/// ```
 pub fn serialize(doc: &FrumpDoc) -> String {
     let mut output = String::new();
 
@@ -316,5 +414,192 @@ Status: working
 
         assert_eq!(doc.tasks.len(), doc2.tasks.len());
         assert_eq!(doc.team.len(), doc2.team.len());
+    }
+
+    #[test]
+    fn test_parse_multiline_body() {
+        let content = r#"# Test
+
+## Tasks
+
+### Task 1 - test task
+
+Line 1
+Line 2
+Line 3
+Status: working
+"#;
+        let doc = parse(content).unwrap();
+        let task = doc.tasks.tasks().first().unwrap();
+        assert!(task.body.contains("Line 1"));
+        assert!(task.body.contains("Line 2"));
+        assert!(task.body.contains("Line 3"));
+    }
+
+    #[test]
+    fn test_parse_empty_body() {
+        let content = r#"# Test
+
+## Tasks
+
+### Task 1 - test task
+
+Status: working
+"#;
+        let doc = parse(content).unwrap();
+        let task = doc.tasks.tasks().first().unwrap();
+        assert!(task.body.is_empty() || task.body.trim().is_empty());
+    }
+
+    #[test]
+    fn test_parse_multiple_types() {
+        let content = r#"# Test
+
+## Tasks
+
+### Task 1 - task one
+
+### Bug 2 - bug two
+
+### Feature 3 - feature three
+"#;
+        let doc = parse(content).unwrap();
+        assert_eq!(doc.tasks.len(), 3);
+        assert_eq!(doc.tasks.tasks()[0].task_type, TaskType::Task);
+        assert_eq!(doc.tasks.tasks()[1].task_type, TaskType::Bug);
+        assert_eq!(doc.tasks.tasks()[2].task_type, TaskType::Feature);
+    }
+
+    #[test]
+    fn test_parse_no_tasks() {
+        let content = r#"# Test
+
+## Team
+
+* John Doe <john@example.com>
+
+## Tasks
+"#;
+        let doc = parse(content).unwrap();
+        assert_eq!(doc.tasks.len(), 0);
+        assert_eq!(doc.team.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_no_team() {
+        let content = r#"# Test
+
+## Team
+
+## Tasks
+
+### Task 1 - test task
+"#;
+        let doc = parse(content).unwrap();
+        assert_eq!(doc.tasks.len(), 1);
+        assert_eq!(doc.team.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_special_characters_in_subject() {
+        let content = r#"# Test
+
+## Tasks
+
+### Task 1 - Test with "quotes" and 'apostrophes' & symbols!
+"#;
+        let doc = parse(content).unwrap();
+        let task = doc.tasks.tasks().first().unwrap();
+        assert_eq!(task.subject, "Test with \"quotes\" and 'apostrophes' & symbols!");
+    }
+}
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Helper to generate valid property keys (capitalized, max 3 words)
+    fn property_key_strategy() -> impl Strategy<Value = String> {
+        prop::string::string_regex("[A-Z][a-z]{1,10}( [A-Z][a-z]{1,10}){0,2}").unwrap()
+    }
+
+    // Helper to generate valid task IDs
+    fn task_id_strategy() -> impl Strategy<Value = u32> {
+        1u32..=1000u32
+    }
+
+    proptest! {
+        #[test]
+        fn test_property_round_trip(
+            id in task_id_strategy(),
+            subject in "[a-zA-Z0-9 ]{1,100}",
+            body in "[a-zA-Z0-9 \n.]{0,500}",
+        ) {
+            let content = format!(
+                "# Test\n\n## Tasks\n\n### Task {} - {}\n\n{}\n",
+                id, subject, body
+            );
+
+            if let Ok(doc) = parse(&content) {
+                let serialized = serialize(&doc);
+                if let Ok(doc2) = parse(&serialized) {
+                    prop_assert_eq!(doc.tasks.len(), doc2.tasks.len());
+                    if doc.tasks.len() > 0 {
+                        prop_assert_eq!(
+                            doc.tasks.tasks()[0].id.value(),
+                            doc2.tasks.tasks()[0].id.value()
+                        );
+                        prop_assert_eq!(
+                            &doc.tasks.tasks()[0].subject,
+                            &doc2.tasks.tasks()[0].subject
+                        );
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn test_property_multiple_tasks_round_trip(
+            ids in prop::collection::vec(task_id_strategy(), 1..5),
+        ) {
+            let mut content = String::from("# Test\n\n## Tasks\n\n");
+
+            for (idx, id) in ids.iter().enumerate() {
+                content.push_str(&format!("### Task {} - Subject {}\n\n", id, idx));
+            }
+
+            if let Ok(doc) = parse(&content) {
+                let serialized = serialize(&doc);
+                if let Ok(doc2) = parse(&serialized) {
+                    prop_assert_eq!(doc.tasks.len(), doc2.tasks.len());
+                }
+            }
+        }
+
+        #[test]
+        fn test_property_team_round_trip(
+            name in "[A-Z][a-z]{2,15} [A-Z][a-z]{2,15}",
+            domain in "[a-z]{3,10}",
+        ) {
+            let email = format!("{}@{}.com", name.to_lowercase().replace(" ", "."), domain);
+            let content = format!(
+                "# Test\n\n## Team\n\n* {} <{}>\n\n## Tasks\n",
+                name, email
+            );
+
+            if let Ok(doc) = parse(&content) {
+                let serialized = serialize(&doc);
+                if let Ok(doc2) = parse(&serialized) {
+                    prop_assert_eq!(doc.team.len(), doc2.team.len());
+                    if doc.team.len() > 0 {
+                        prop_assert_eq!(
+                            &doc.team.members()[0].name,
+                            &doc2.team.members()[0].name
+                        );
+                    }
+                }
+            }
+        }
     }
 }

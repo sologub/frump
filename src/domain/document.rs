@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_filter_by_type() {
-        let mut tasks = vec![
+        let tasks = vec![
             Task::new(TaskId::new(1).unwrap(), TaskType::Task, "test".to_string()),
             Task::new(TaskId::new(2).unwrap(), TaskType::Bug, "bug".to_string()),
         ];

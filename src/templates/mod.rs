@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_template_placeholders() {
-        let template = TaskTemplate {
+        let _template = TaskTemplate {
             name: "bug".to_string(),
             task_type: "Bug".to_string(),
             subject_template: "Fix {component} issue".to_string(),
@@ -159,7 +159,7 @@ mod tests {
         replacements.insert("description".to_string(), "crashes on empty input".to_string());
 
         let manager = TemplateManager::new();
-        let task = manager
+        let _task = manager
             .instantiate(
                 "bug",
                 TaskId::new(1).unwrap(),
