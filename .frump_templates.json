@@ -1,0 +1,16 @@
+[
+  {
+    "name": "bug",
+    "task_type": "Bug",
+    "subject_template": "Fix {component} issue",
+    "body_template": "Issue found in {component}: {description}",
+    "properties": {}
+  },
+  {
+    "name": "feature",
+    "task_type": "Feature",
+    "subject_template": "Add {feature} support",
+    "body_template": "",
+    "properties": {}
+  }
+]
