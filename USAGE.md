@@ -25,6 +25,20 @@ cargo build --release
 
 Frump automatically finds `frump.md` in the current directory or a parent directory. Use `--file` only to select a different board.
 
+## Experimental sharded board layout
+
+Frump can also read and write a board that has already been laid out as individual task files. This is intentionally not a migration command yet: create and test the layout manually before adopting it.
+
+```text
+frump/
+  general.md
+  tasks/
+    1.md
+    2.md
+```
+
+`general.md` contains the project header and Team section. Each task file contains exactly one normal task heading, body, and properties. When invoked with `--file frump`, Frump writes only changed task files rather than rewriting the full board. Existing `frump.md` boards retain their current behavior.
+
 ## Web board
 
 Start a local Kanban editor for `frump.md`:

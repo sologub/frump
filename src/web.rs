@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use crate::{
-    mark_updated, now_utc, parser, validate_property_value, FrumpDoc, FrumpRepo, PropertyKey, Task,
-    TaskId, TaskType,
+    mark_updated, now_utc, storage, validate_property_value, FrumpDoc, FrumpRepo, PropertyKey,
+    Task, TaskId, TaskType,
 };
 
 #[derive(Clone)]
@@ -205,18 +205,16 @@ fn read_document(file: &PathBuf) -> Result<DocumentDto> {
 }
 
 fn read_parsed_document(file: &PathBuf) -> Result<FrumpDoc> {
-    let content = fs::read_to_string(file)
-        .with_context(|| format!("Failed to read task file {}", file.display()))?;
-    parser::parse(&content).context("Failed to parse task file")
+    storage::read(file).with_context(|| format!("Failed to read task board {}", file.display()))
 }
 
 fn write_document(file: &PathBuf, doc: &FrumpDoc) -> Result<()> {
-    fs::write(file, parser::serialize(doc))
-        .with_context(|| format!("Failed to write task file {}", file.display()))
+    storage::write(file, doc).with_context(|| format!("Failed to write task board {}", file.display()))
 }
 
 fn acquire_write_lock(file: &PathBuf) -> Result<fs::File> {
-    let lock = fs::OpenOptions::new().read(true).write(true).open(file)?;
+    let lock_path = if file.is_dir() { file.join(".frump.lock") } else { file.clone() };
+    let lock = fs::OpenOptions::new().read(true).write(true).create(file.is_dir()).open(lock_path)?;
     lock.lock_exclusive()?;
     Ok(lock)
 }

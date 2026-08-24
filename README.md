@@ -87,6 +87,10 @@ Frump supports `Depends On: 1, 2` task properties, validates active dependency g
 
 Use `frump commit -m "short message"` to stage and commit only the task file; it never pushes.
 
+### Experimental sharded storage
+
+For manual evaluation, Frump can read and write an already-created `frump/` directory containing `general.md` and one Markdown file per task in `frump/tasks/`. Invoke it with `--file frump`. This is not a migration path yet; existing `frump.md` remains the default and fully supported format.
+
 Columns are built from a property you choose: `Status` by default, or any other
 property in the file, such as `Assigned To`. Drag a card between columns to
 change that property, or edit it in the task view. Search matches ids,

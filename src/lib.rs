@@ -40,6 +40,7 @@ pub mod domain;
 pub mod export;
 pub mod git;
 pub mod parser;
+pub mod storage;
 pub mod templates;
 pub mod updates;
 pub mod web;
