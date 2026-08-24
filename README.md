@@ -70,6 +70,54 @@ frump close 1
 git commit -am "Complete task 1"
 ```
 
+### Local Kanban board
+
+```bash
+frump web
+# Open http://127.0.0.1:3000
+```
+
+The board edits `frump.md` directly and refreshes when the file changes externally.
+
+### Authority workflow
+
+Frump supports `Depends On: 1, 2` task properties, validates active dependency graphs, and provides `deps`, `dependents`, and `ready` queries. Use `update --append-body` to preserve review and validation evidence in the durable task record; use `unset` to remove stale properties. `close` requires a `done` task whose active prerequisites are also done.
+
+Use `frump commit -m "short message"` to stage and commit only the task file; it never pushes.
+
+Columns are built from a property you choose: `Status` by default, or any other
+property in the file, such as `Assigned To`. Drag a card between columns to
+change that property, or edit it in the task view. Search matches ids,
+subjects, bodies and properties; the search text, column order, collapsed
+columns, sort, density, theme and scroll positions are remembered per board in
+the browser, so a reload comes back to the same view. An open task is addressed
+in the URL, which means a reload reopens it — with the unsaved draft it had —
+and Back closes it. Keyboard: `/` focuses search,
+`n` opens a new task, `Alt` with the arrow keys moves the focused card between
+columns, `Escape` closes the dialog.
+
+Task bodies are rendered as Markdown on the cards — emphasis, inline code, code
+blocks, lists, quotes and links. Clicking a card opens the task full screen:
+the Markdown body on the left, type, status and properties on a rail beside it.
+The body field knows Markdown while you type: Enter continues a list or a quote
+and ends it on an empty item, ordered lists renumber, Tab and Shift+Tab indent
+within a list, Ctrl+B, Ctrl+I and Ctrl+K wrap the selection, and Ctrl+Enter
+saves. Status, type and every property offer the values already used elsewhere
+in the file as a dropdown, while still accepting anything you type.
+Refreshes are incremental: only the cards that actually changed are redrawn, and
+a card changed by another tool flashes once, so an open board can be left
+running while `frump` edits the file from the command line.
+
+An open task view is never discarded by an external change. If the file changes
+under an edit in progress, the draft stays exactly as typed and the task view
+asks which version should win: reload from the file, or keep the draft and let
+the next save overwrite. If the task is removed from the file while it is being
+edited, the draft can be saved as a new task.
+
+Each task also has a notify control, on the card and in the task view, that
+sends a message about that task to a crew member through Metateam; the task id
+and subject are added for you.
+
 ## CLI Reference
 
 ### Task Management

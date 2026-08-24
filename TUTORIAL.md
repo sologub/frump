@@ -18,6 +18,10 @@ Welcome to Frump! This tutorial will walk you through setting up and using Frump
 
 ## Part 1: Installation and Setup
 
+### Authority workflow commands
+
+Use `frump init` to create an empty board, `frump unset` to remove stale properties, and `frump update --append-body` to retain review or validation evidence. Dependency properties use `Depends On: 1, 2`; run `frump validate`, `frump deps`, `frump dependents`, and `frump ready` to work safely with the dependency graph. New statuses and similar new task subjects produce warnings but remain user-controlled.
+
 ### Step 1: Build Frump
 
 ```bash

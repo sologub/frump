@@ -23,6 +23,71 @@ cargo build --release
 # Binary will be at target/release/frump
 ```
 
+## Web board
+
+Start a local Kanban editor for `frump.md`:
+
+```bash
+frump web
+# Open http://127.0.0.1:3000
+
+# Use a different task file or port
+frump web --file project-tasks.md --port 4000
+```
+
+The board edits the Markdown file directly and refreshes automatically when another tool modifies it.
+
+## Authority workflow
+
+```bash
+# Declare comma-separated prerequisites in the existing Markdown property format
+frump set 12 "Depends On" "3, 7"
+frump validate                 # rejects unknown and cyclic active dependencies
+frump deps 12                  # show the prerequisite tree
+frump dependents 7             # show active consumers of task 7
+frump ready                    # show tasks with no active prerequisites
+
+# Preserve task evidence as durable body text
+frump update 12 --append-body "Review rejected: reason and next proof"
+frump unset 12 Status
+```
+
+`frump close` requires `Status: done` and every active prerequisite to be done. A new status remains allowed, but emits a warning so project vocabulary does not drift accidentally. `frump add` warns when similar existing tasks are found but still creates the task.
+
+Initialize a new board explicitly:
+
+```bash
+frump init --file frump.md --title "My Project"
+```
+
+Commit only the task file with a short message:
+
+```bash
+frump commit -m "Record completed validation"
+```
+
+Group the columns by `Status` or by any other property in the file, filter with
+the search box or the type picker, reorder and collapse columns, and switch
+sort, density or theme from the toolbar. Layout choices, the search text and the scroll
+positions are stored per board in the browser, never in the Markdown file, so a
+reload returns to the same view. The open task is part of the URL: reloading
+reopens it together with any unsaved draft, and Back closes it. Keyboard: `/` search, `n` new task,
+`Alt` plus arrow keys to move the focused card, `Escape` to close the dialog.
+
+Task bodies render as Markdown on the cards, and the body field continues lists
+and quotes as you type, renumbers ordered lists, indents with Tab, wraps the
+selection with Ctrl+B, Ctrl+I and Ctrl+K, and saves with Ctrl+Enter. Status,
+type and property values are offered as dropdowns built from the values already
+used in the file, and still accept new values. Clicking a card opens it full
+screen. The board refreshes in place — unchanged cards keep their scroll
+position and focus, changed cards flash — and a refresh never interrupts a drag.
+
+Editing is safe against concurrent writes: an external change never discards an
+open draft, it raises a conflict notice in the task view offering reload or
+keep, and a task deleted underneath an edit can be saved as a new task. The
+notify control on a card or in the task view sends a message about that task to
+a crew member through Metateam.
+
 ## Getting Started
 
 Frump works with a `frump.md` file in your project directory. This file contains:

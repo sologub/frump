@@ -41,6 +41,7 @@ pub mod export;
 pub mod git;
 pub mod parser;
 pub mod templates;
+pub mod web;
 
 // Re-export for convenience
 pub use domain::{
