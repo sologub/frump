@@ -23,6 +23,8 @@ cargo build --release
 # Binary will be at target/release/frump
 ```
 
+Frump automatically finds `frump.md` in the current directory or a parent directory. Use `--file` only to select a different board.
+
 ## Web board
 
 Start a local Kanban editor for `frump.md`:

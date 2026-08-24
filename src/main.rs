@@ -13,7 +13,7 @@ use frump::{export_csv, export_json, import_json, parser, ChangeType, FrumpRepo,
     after_help = "AI agents: run `frump usage` for the complete usage guide.\nBuild from source with `cargo build --release`."
 )]
 struct Cli {
-    #[arg(short, long, global = true, default_value = "frump.md")]
+    #[arg(short, long, global = true, default_value = ".", hide_default_value = true)]
     file: PathBuf,
 
     #[command(subcommand)]
@@ -282,7 +282,14 @@ enum BulkAction {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if cli.file == PathBuf::from(".") {
+        cli.file = if matches!(cli.command, Commands::Init { .. }) {
+            PathBuf::from("frump.md")
+        } else {
+            discover_task_file()?
+        };
+    }
     let _write_lock = if cli.file.exists() && matches!(cli.command, Commands::Add { .. } | Commands::Close { .. } | Commands::Assign { .. } | Commands::Set { .. } | Commands::Unset { .. } | Commands::Update { .. } | Commands::Import { .. } | Commands::Bulk { .. } | Commands::ResolveConflicts { .. }) {
         Some(acquire_write_lock(&cli.file)?)
     } else { None };
@@ -1157,6 +1164,24 @@ fn ensure_close_is_recoverable(file: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn discover_task_file() -> Result<PathBuf> {
+    let mut directory = std::env::current_dir().context("Failed to determine the current directory")?;
+    loop {
+        let candidate = directory.join("frump.md");
+        match fs::metadata(&candidate) {
+            Ok(metadata) if metadata.is_file() => return Ok(candidate),
+            Ok(_) => anyhow::bail!("{} exists but is not a regular file", candidate.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).with_context(|| format!("Failed to inspect {}", candidate.display())),
+        }
+        let Some(parent) = directory.parent() else {
+            anyhow::bail!("No frump.md found from the current directory through the filesystem root. Pass --file explicitly or run frump init.");
+        };
+        if parent == directory { anyhow::bail!("No frump.md found from the current directory through the filesystem root. Pass --file explicitly or run frump init."); }
+        directory = parent.to_path_buf();
+    }
 }
 
 fn commit_task_file(file: &Path, message: &str) -> Result<()> {

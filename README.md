@@ -2,6 +2,8 @@
 
 Distributed task management tool based on Git and Markdown. Manage tasks alongside your code with full version history.
 
+Frump automatically discovers `frump.md` from the current directory upward, so commands work from project subdirectories without an explicit file option.
+
 ## Why Frump?
 
 **Problem**: Traditional task management tools keep tasks separate from code, making it hard to see the full project picture from git history alone. Teams also lack truly distributed task collaboration.
