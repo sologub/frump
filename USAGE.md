@@ -72,8 +72,11 @@ Group the columns by `Status` or by any other property in the file, filter with
 the search box or the type picker, reorder and collapse columns, and switch
 sort, density or theme from the toolbar. Layout choices, the search text and the scroll
 positions are stored per board in the browser, never in the Markdown file, so a
-reload returns to the same view. The open task is part of the URL: reloading
-reopens it together with any unsaved draft, and Back closes it. Keyboard: `/` search, `n` new task,
+reload returns to the same view. The open task and the notify panel are part of
+the URL: reloading reopens them together with any unsaved draft, and Back steps
+out. Saving keeps the task open; the close button reads Cancel when there are
+unsaved changes and Close when there are none, and leaving without deciding
+keeps the work for when the task is reopened. Keyboard: `/` search, `n` new task,
 `Alt` plus arrow keys to move the focused card, `Escape` to close the dialog.
 
 Task bodies render as Markdown on the cards, and the body field continues lists

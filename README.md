@@ -92,9 +92,13 @@ property in the file, such as `Assigned To`. Drag a card between columns to
 change that property, or edit it in the task view. Search matches ids,
 subjects, bodies and properties; the search text, column order, collapsed
 columns, sort, density, theme and scroll positions are remembered per board in
-the browser, so a reload comes back to the same view. An open task is addressed
-in the URL, which means a reload reopens it — with the unsaved draft it had —
-and Back closes it. Keyboard: `/` focuses search,
+the browser, so a reload comes back to the same view. An open task, and an open notify panel,
+are addressed in the URL, so a reload reopens exactly what was open — with the
+unsaved draft or half-written message it had — and Back steps out of it.
+Saving a task keeps it open and reports it; closing is a separate act, and the
+close button reads Cancel while there are unsaved changes and Close when there
+are none. Leaving with unsaved changes by Escape, the backdrop or Back keeps
+that work and says so; reopening the task restores it. Keyboard: `/` focuses search,
 `n` opens a new task, `Alt` with the arrow keys moves the focused card between
 columns, `Escape` closes the dialog.
 
