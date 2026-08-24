@@ -44,7 +44,10 @@ pub fn write(path: &Path, doc: &FrumpDoc) -> Result<()> {
     let tasks_dir = root.join("tasks");
     let expected: BTreeSet<_> = doc.tasks.tasks().iter().map(|task| task.id.value()).collect();
     for task in doc.tasks.tasks() {
-        write_if_changed(&tasks_dir.join(format!("{}.md", task.id.value())), &serialize_task(task))?;
+        let path = tasks_dir.join(format!("{}.md", task.id.value()));
+        if !task_file_matches(&path, task) {
+            write_if_changed(&path, &serialize_task(task))?;
+        }
     }
     for entry in fs::read_dir(&tasks_dir)? {
         let entry = entry?;
@@ -53,6 +56,12 @@ pub fn write(path: &Path, doc: &FrumpDoc) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn task_file_matches(path: &Path, task: &Task) -> bool {
+    let Ok(fragment) = fs::read_to_string(path) else { return false; };
+    let Ok(parsed) = parser::parse(&format!("## Tasks\n\n{fragment}")) else { return false; };
+    parsed.tasks.len() == 1 && serialize_task(&parsed.tasks.tasks()[0]) == serialize_task(task)
 }
 
 fn write_if_changed(path: &Path, content: &str) -> Result<()> {
