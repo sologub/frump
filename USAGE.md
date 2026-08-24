@@ -49,12 +49,14 @@ frump deps 12                  # show the prerequisite tree
 frump dependents 7             # show active consumers of task 7
 frump ready                    # show tasks with no active prerequisites
 
-# Preserve task evidence as durable body text
+# Append durable task evidence without overwriting the existing body
 frump update 12 --append-body "Review rejected: reason and next proof"
 frump unset 12 Status
 ```
 
 `frump close` requires `Status: done` and every active prerequisite to be done. A new status remains allowed, but emits a warning so project vocabulary does not drift accidentally. `frump add` warns when similar existing tasks are found but still creates the task.
+
+Frump automatically maintains `Last Updated` whenever it creates or changes a task. Property values are compact metadata and may be at most 40 bytes; put longer evidence, reports, and rationale in the body. `--append-body` adds a dated Markdown update and, when invoked by a Metateam crew member, records that member's name. Normal web Save deliberately replaces the body with exactly the text in the editor.
 
 Initialize a new board explicitly:
 
@@ -255,7 +257,7 @@ frump assign 7 "Jane Smith"
 
 ### set - Set a property
 
-Set or update any property on a task.
+Set or update any property on a task. Property values are limited to 40 bytes; use the task body for longer text.
 
 ```bash
 frump set <task_id> <property_name> <value>
@@ -295,7 +297,12 @@ frump update <task_id> --body "New detailed description"
 frump update <task_id> \
   --subject "Updated title" \
   --body "Updated description"
+
+# Append dated evidence without replacing the existing body
+frump update <task_id> --append-body "Validation passed after rebuild"
 ```
+
+`--body` replaces the body exactly. `--append-body` creates a dated Markdown update and adds the current Metateam crew member when that identity is available.
 
 **Example:**
 ```bash

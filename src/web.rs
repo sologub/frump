@@ -6,11 +6,14 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
-use fs2::FileExt;
 
-use crate::{parser, FrumpDoc, FrumpRepo, PropertyKey, Task, TaskId, TaskType};
+use crate::{
+    mark_updated, now_utc, parser, validate_property_value, FrumpDoc, FrumpRepo, PropertyKey, Task,
+    TaskId, TaskType,
+};
 
 #[derive(Clone)]
 struct AppState {
@@ -55,7 +58,10 @@ struct TaskInput {
 }
 
 #[derive(Debug, Deserialize)]
-struct NotifyInput { recipient: String, message: String }
+struct NotifyInput {
+    recipient: String,
+    message: String,
+}
 
 #[derive(Debug)]
 struct ApiError(anyhow::Error);
@@ -112,7 +118,9 @@ async fn create_task(
     let _lock = acquire_write_lock(&state.file)?;
     let mut doc = read_parsed_document(&state.file)?;
     let id = next_task_id(&doc);
-    let task = task_from_input(id, input)?;
+    validate_new_property_values(&input.properties)?;
+    let mut task = task_from_input(id, input)?;
+    mark_updated(&mut task, &now_utc());
     let response = task_to_dto(&task);
     doc.tasks.add(task);
     write_document(&state.file, &doc)?;
@@ -127,11 +135,13 @@ async fn update_task(
     let _lock = acquire_write_lock(&state.file)?;
     let mut doc = read_parsed_document(&state.file)?;
     let task_id = TaskId::new(id)?;
-    let replacement = task_from_input(task_id, input)?;
     let task = doc
         .tasks
         .find_by_id_mut(task_id)
         .ok_or_else(|| ApiError(anyhow::anyhow!("Task {id} not found")))?;
+    validate_changed_property_values(task, &input.properties)?;
+    let mut replacement = task_from_input(task_id, input)?;
+    mark_updated(&mut replacement, &now_utc());
     *task = replacement;
     let response = task_to_dto(task);
     write_document(&state.file, &doc)?;
@@ -149,13 +159,44 @@ async fn delete_task(State(state): State<AppState>, Path(id): Path<u32>) -> ApiR
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn notify_task(State(state): State<AppState>, Path(id): Path<u32>, Json(input): Json<NotifyInput>) -> ApiResult<StatusCode> {
-    if input.recipient.trim().is_empty() || input.message.trim().is_empty() { return Err(ApiError(anyhow::anyhow!("Recipient and message are required"))); }
+async fn notify_task(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+    Json(input): Json<NotifyInput>,
+) -> ApiResult<StatusCode> {
+    if input.recipient.trim().is_empty() || input.message.trim().is_empty() {
+        return Err(ApiError(anyhow::anyhow!(
+            "Recipient and message are required"
+        )));
+    }
     let doc = read_parsed_document(&state.file)?;
-    let task = doc.tasks.find_by_id(TaskId::new(id)?).ok_or_else(|| ApiError(anyhow::anyhow!("Task {id} not found")))?;
-    let text = format!("Frump task #{}: {}\n\n{}", task.id, task.subject, input.message.trim());
-    let output = std::process::Command::new("metateam").args(["crew", "message", "--from", "frump", input.recipient.trim(), &text]).output().context("Failed to run Metateam")?;
-    if !output.status.success() { return Err(ApiError(anyhow::anyhow!("Metateam could not send notification: {}", String::from_utf8_lossy(&output.stderr).trim()))); }
+    let task = doc
+        .tasks
+        .find_by_id(TaskId::new(id)?)
+        .ok_or_else(|| ApiError(anyhow::anyhow!("Task {id} not found")))?;
+    let text = format!(
+        "Frump task #{}: {}\n\n{}",
+        task.id,
+        task.subject,
+        input.message.trim()
+    );
+    let output = std::process::Command::new("metateam")
+        .args([
+            "crew",
+            "message",
+            "--from",
+            "frump",
+            input.recipient.trim(),
+            &text,
+        ])
+        .output()
+        .context("Failed to run Metateam")?;
+    if !output.status.success() {
+        return Err(ApiError(anyhow::anyhow!(
+            "Metateam could not send notification: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -207,6 +248,25 @@ fn task_from_input(id: TaskId, input: TaskInput) -> Result<Task> {
         task.add_property(PropertyKey::new(&property.key)?, property.value);
     }
     Ok(task)
+}
+
+fn validate_new_property_values(properties: &[PropertyDto]) -> Result<()> {
+    for property in properties {
+        validate_property_value(&property.value)
+            .map_err(|error| anyhow::anyhow!("Property '{}': {error}", property.key))?;
+    }
+    Ok(())
+}
+
+fn validate_changed_property_values(existing: &Task, properties: &[PropertyDto]) -> Result<()> {
+    for property in properties {
+        let key = PropertyKey::new(&property.key)?;
+        if existing.get_property(&key) != Some(property.value.as_str()) {
+            validate_property_value(&property.value)
+                .map_err(|error| anyhow::anyhow!("Property '{}': {error}", property.key))?;
+        }
+    }
+    Ok(())
 }
 
 fn document_to_dto(doc: &FrumpDoc) -> DocumentDto {
@@ -282,5 +342,33 @@ mod tests {
             TaskCollection::new(vec![task]),
         );
         assert_eq!(document_to_dto(&doc).tasks[0].id, 3);
+    }
+
+    #[test]
+    fn legacy_long_property_survives_an_unrelated_web_edit() {
+        let mut task = Task::new(
+            TaskId::new(1).unwrap(),
+            TaskType::Task,
+            "A task".to_string(),
+        );
+        task.add_property(
+            PropertyKey::new("Review").unwrap(),
+            "A legacy review value deliberately longer than forty bytes".to_string(),
+        );
+        let unchanged = vec![PropertyDto {
+            key: "Review".to_string(),
+            value: "A legacy review value deliberately longer than forty bytes".to_string(),
+        }];
+        assert!(validate_changed_property_values(&task, &unchanged).is_ok());
+
+        let changed = vec![PropertyDto {
+            key: "Review".to_string(),
+            value: "A changed review value deliberately longer than forty bytes".to_string(),
+        }];
+        let error = validate_changed_property_values(&task, &changed)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Review"));
+        assert!(error.contains("task body"));
     }
 }

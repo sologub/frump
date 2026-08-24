@@ -83,7 +83,7 @@ The board edits `frump.md` directly and refreshes when the file changes external
 
 ### Authority workflow
 
-Frump supports `Depends On: 1, 2` task properties, validates active dependency graphs, and provides `deps`, `dependents`, and `ready` queries. Use `update --append-body` to preserve review and validation evidence in the durable task record; use `unset` to remove stale properties. `close` requires a `done` task whose active prerequisites are also done.
+Frump supports `Depends On: 1, 2` task properties, validates active dependency graphs, and provides `deps`, `dependents`, and `ready` queries. Use `update --append-body` to preserve review and validation evidence in the durable task record; it adds a UTC timestamp and, when available, the Metateam crew member. `Last Updated` is maintained automatically for every created or changed task. Properties are compact metadata limited to 40 bytes; place longer evidence in the body. Use `unset` to remove stale properties. `close` requires a `done` task whose active prerequisites are also done.
 
 Use `frump commit -m "short message"` to stage and commit only the task file; it never pushes.
 
@@ -108,7 +108,7 @@ the Markdown body on the left, type, status and properties on a rail beside it.
 The body field knows Markdown while you type: Enter continues a list or a quote
 and ends it on an empty item, ordered lists renumber, Tab and Shift+Tab indent
 within a list, Ctrl+B, Ctrl+I and Ctrl+K wrap the selection, and Ctrl+Enter
-saves. Status, type and every property offer the values already used elsewhere
+saves. Normal Save replaces the body exactly with the editor text. Status, type and every property offer the values already used elsewhere
 in the file as a dropdown, while still accepting anything you type.
 Refreshes are incremental: only the cards that actually changed are redrawn, and
 a card changed by another tool flashes once, so an open board can be left

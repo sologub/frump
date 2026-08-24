@@ -589,6 +589,7 @@
         <button type="button" class="ghost hidden" id="conflict-reload">Reload from file</button>
         <button type="button" class="ghost hidden" id="conflict-keep">Keep my draft</button>
         <button type="button" class="ghost hidden" id="conflict-new">Save as a new task</button>
+        <button type="button" class="ghost hidden" id="conflict-close">Close task</button>
       </div>
     </div>
 
@@ -1375,7 +1376,7 @@ function hideNotice() {
    user is asked, in the task view, which version should win. */
 function showConflict(text, actions) {
   $('#conflict-text').textContent = text;
-  for (const id of ['#conflict-reload', '#conflict-keep', '#conflict-new']) {
+  for (const id of ['#conflict-reload', '#conflict-keep', '#conflict-new', '#conflict-close']) {
     $(id).classList.toggle('hidden', !actions.includes(id.slice(1)));
   }
   $('#conflict').classList.remove('hidden');
@@ -1383,19 +1384,45 @@ function showConflict(text, actions) {
 }
 function hideConflict() { $('#conflict').classList.add('hidden'); }
 
+/* Adopt the file's version without asking, keeping the caret where it was. */
+function rebaseEditor(current) {
+  const field = form.contains(document.activeElement) ? document.activeElement : null;
+  const name = field?.id || field?.name || null;
+  const caret = field && field.selectionStart !== undefined ? [field.selectionStart, field.selectionEnd] : null;
+  editing = current;
+  editingBase = taskSignature(current);
+  conflictDismissed = null;
+  fillEditor(current);
+  hideConflict();
+  if (name) {
+    const again = form.elements[name] || $('#' + CSS.escape(name));
+    if (again) {
+      again.focus();
+      if (caret && again.setSelectionRange) { try { again.setSelectionRange(caret[0], caret[1]); } catch {} }
+    }
+  }
+  saveState('Updated from file');
+  announce('This task changed in the file. The view now shows the new version.');
+}
+
 function checkEditorConflict() {
   if (!editing) return;
   const current = doc.tasks.find(x => x.id === editing.id);
+  const dirty = isDirty();
   if (!current) {
-    showConflict('This task was removed from the file while you were editing. Your draft is still here.',
-      ['conflict-new']);
+    showConflict(dirty
+      ? 'This task was removed from the file while you were editing. Your draft is still here.'
+      : 'This task was removed from the file.',
+      dirty ? ['conflict-new'] : ['conflict-close']);
     return;
   }
   const signature = taskSignature(current);
   if (signature === editingBase) { hideConflict(); return; }   /* the change was elsewhere in the file */
+  /* Nothing typed means nothing to reconcile: show the new version and say so
+     quietly, instead of asking the user to choose between two identical things. */
+  if (!dirty) { rebaseEditor(current); return; }
   /* The file may now hold exactly what is on screen, because this editor just
-     saved it or because the same edit arrived from elsewhere. Nothing to
-     reconcile, so nothing to say. */
+     saved it or because the same edit arrived from elsewhere. */
   if (signature === taskSignature(input())) { editingBase = signature; hideConflict(); return; }
   if (signature === conflictDismissed) return;                 /* already answered for this version */
   showConflict('This task changed in the file while you were editing. Your draft is untouched.',
@@ -1438,14 +1465,17 @@ function input() {
     properties,
   };
 }
-function saveState(text) {
+/* A refusal stays on screen next to the button that caused it: it is the answer
+   to something the user asked for, not a passing status line. */
+function saveState(text, kind) {
   const box = $('#save-state');
   box.textContent = text;
-  box.dataset.kind = 'ok';
+  box.dataset.kind = kind || 'ok';
   box.classList.remove('hidden');
   clearTimeout(saveState.timer);
-  saveState.timer = setTimeout(() => box.classList.add('hidden'), 2500);
+  if (kind !== 'error') saveState.timer = setTimeout(() => box.classList.add('hidden'), 2500);
 }
+function clearSaveState() { clearTimeout(saveState.timer); $('#save-state').classList.add('hidden'); }
 
 /* Saving commits the task and stays on it: the view is where the work happens,
    and closing it is a separate, deliberate act. */
@@ -1489,7 +1519,10 @@ async function move(id, key) {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...t, properties }),
   });
-  if (!r.ok) { notice(await r.text(), 'error'); return; }
+  if (!r.ok) {
+    notice('Task ' + id + ' was not moved: ' + (await r.text()).trim(), 'error', true);
+    return;
+  }
   await load();
   announce('Task ' + id + ' moved to ' + label(key));
   $('.card[data-id="' + CSS.escape(String(id)) + '"] .open', board)?.focus();
@@ -1754,8 +1787,10 @@ function fillEditor(t) {
   updateDirty();
 }
 
+
 function openEditor(t) {
   if (!fileValid) return;
+  clearSaveState();
   editing = t || null;
   editingBase = t ? taskSignature(t) : null;
   conflictDismissed = null;
@@ -1822,6 +1857,7 @@ $('#conflict-keep').onclick = () => {
   hideConflict();
   announce('Keeping your draft; saving will overwrite the file version');
 };
+$('#conflict-close').onclick = () => closeEditor(true);
 $('#conflict-new').onclick = () => {
   editing = null;                 /* the id is gone, so the draft is saved as a new task */
   editingBase = null;
@@ -1942,12 +1978,26 @@ $('#add-property').onclick = () => $('.property-key', propertyRow()).focus();
 $('#delete').onclick = async () => {
   if (!editing || !confirm('Delete task #' + editing.id + '?')) return;
   const id = editing.id, r = await fetch('/api/tasks/' + id, { method: 'DELETE' });
-  if (!r.ok) notice(await r.text(), 'error');
+  if (!r.ok) {
+    saveState((await r.text()).trim(), 'error');
+    notice('Task ' + id + ' was not deleted.', 'error', true);
+    return;                       /* the task is still there, so the view stays on it */
+  }
   closeEditor(true);
   await load();
   announce('Task ' + id + ' deleted');
 };
-form.onsubmit = async e => { e.preventDefault(); try { await save(); } catch (err) { notice(err.message, 'error'); } };
+form.onsubmit = async e => {
+  e.preventDefault();
+  clearSaveState();
+  try { await save(); }
+  catch (err) {
+    /* The task view keeps the reason where the user is looking, and the sticky
+       notice survives the next poll for anyone who closed the view. */
+    saveState(err.message, 'error');
+    notice('Task not saved: ' + err.message, 'error', true);
+  }
+};
 
 $('#query').oninput = e => setQuery(e.target.value);
 $('#query').onkeydown = e => { if (e.key === 'Escape' && prefs.query) { e.preventDefault(); setQuery(''); } };

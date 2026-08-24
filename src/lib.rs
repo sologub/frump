@@ -41,13 +41,15 @@ pub mod export;
 pub mod git;
 pub mod parser;
 pub mod templates;
+pub mod updates;
 pub mod web;
 
 // Re-export for convenience
 pub use domain::{
-    Email, FrumpDoc, Property, PropertyKey, Task, TaskCollection, TaskId, TaskType, Team,
-    TeamMember,
+    validate_property_value, Email, FrumpDoc, Property, PropertyKey, Task, TaskCollection, TaskId,
+    TaskType, Team, TeamMember,
 };
 pub use export::{export_csv, export_json, import_json};
 pub use git::{ChangeType, FrumpRepo, TaskCommit, TaskHistory};
 pub use templates::{TaskTemplate, TemplateManager};
+pub use updates::{append_update, mark_updated, now_utc, LAST_UPDATED_PROPERTY};

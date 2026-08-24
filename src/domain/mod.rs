@@ -7,7 +7,7 @@ pub mod team;
 
 // Re-export commonly used types
 pub use document::{FrumpDoc, TaskCollection};
-pub use property::{Property, PropertyKey};
+pub use property::{validate_property_value, Property, PropertyKey, MAX_PROPERTY_VALUE_BYTES};
 pub use task::Task;
 pub use task_id::TaskId;
 pub use task_type::TaskType;

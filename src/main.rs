@@ -4,7 +4,11 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
-use frump::{export_csv, export_json, import_json, parser, ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskType, TaskTemplate, TemplateManager};
+use frump::{
+    append_update, export_csv, export_json, import_json, mark_updated, now_utc, parser,
+    validate_property_value, ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskTemplate,
+    TaskType, TemplateManager, LAST_UPDATED_PROPERTY,
+};
 
 #[derive(Parser)]
 #[command(name = "frump")]
@@ -13,7 +17,13 @@ use frump::{export_csv, export_json, import_json, parser, ChangeType, FrumpRepo,
     after_help = "AI agents: run `frump usage` for the complete usage guide.\nBuild from source with `cargo build --release`."
 )]
 struct Cli {
-    #[arg(short, long, global = true, default_value = ".", hide_default_value = true)]
+    #[arg(
+        short,
+        long,
+        global = true,
+        default_value = ".",
+        hide_default_value = true
+    )]
     file: PathBuf,
 
     #[command(subcommand)]
@@ -80,7 +90,6 @@ enum Commands {
         /// Status (optional)
         #[arg(short, long)]
         status: Option<String>,
-
     },
 
     /// Close a task by removing it from frump.md
@@ -290,9 +299,23 @@ async fn main() -> Result<()> {
             discover_task_file()?
         };
     }
-    let _write_lock = if cli.file.exists() && matches!(cli.command, Commands::Add { .. } | Commands::Close { .. } | Commands::Assign { .. } | Commands::Set { .. } | Commands::Unset { .. } | Commands::Update { .. } | Commands::Import { .. } | Commands::Bulk { .. } | Commands::ResolveConflicts { .. }) {
+    let _write_lock = if cli.file.exists()
+        && matches!(
+            cli.command,
+            Commands::Add { .. }
+                | Commands::Close { .. }
+                | Commands::Assign { .. }
+                | Commands::Set { .. }
+                | Commands::Unset { .. }
+                | Commands::Update { .. }
+                | Commands::Import { .. }
+                | Commands::Bulk { .. }
+                | Commands::ResolveConflicts { .. }
+        ) {
         Some(acquire_write_lock(&cli.file)?)
-    } else { None };
+    } else {
+        None
+    };
 
     match &cli.command {
         Commands::Usage => {
@@ -315,8 +338,14 @@ async fn main() -> Result<()> {
         } => {
             let content = fs::read_to_string(&cli.file).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
-                    anyhow::anyhow!("Task file {} does not exist. Initialize it with `frump init --file {}`.", cli.file.display(), cli.file.display())
-                } else { anyhow::Error::from(error).context("Failed to read frump.md file") }
+                    anyhow::anyhow!(
+                        "Task file {} does not exist. Initialize it with `frump init --file {}`.",
+                        cli.file.display(),
+                        cli.file.display()
+                    )
+                } else {
+                    anyhow::Error::from(error).context("Failed to read frump.md file")
+                }
             })?;
             let doc = parser::parse(&content)?;
 
@@ -382,19 +411,34 @@ async fn main() -> Result<()> {
         } => {
             let content = fs::read_to_string(&cli.file).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
-                    anyhow::anyhow!("Task file {} does not exist. Initialize it with `frump init --file {}`.", cli.file.display(), cli.file.display())
-                } else { anyhow::Error::from(error).context("Failed to read frump.md file") }
+                    anyhow::anyhow!(
+                        "Task file {} does not exist. Initialize it with `frump init --file {}`.",
+                        cli.file.display(),
+                        cli.file.display()
+                    )
+                } else {
+                    anyhow::Error::from(error).context("Failed to read frump.md file")
+                }
             })?;
             let mut doc = parser::parse(&content)?;
 
             let query = normalize_search_text(subject);
-            let candidates: Vec<_> = doc.tasks.tasks().iter().filter(|task| {
-                all_query_tokens_match(&query, &task.subject, &task.body)
-                    && search_similarity(&query, &task.subject).max(search_similarity(&query, &task.body)) >= 0.78
-            }).collect();
+            let candidates: Vec<_> = doc
+                .tasks
+                .tasks()
+                .iter()
+                .filter(|task| {
+                    all_query_tokens_match(&query, &task.subject, &task.body)
+                        && search_similarity(&query, &task.subject)
+                            .max(search_similarity(&query, &task.body))
+                            >= 0.78
+                })
+                .collect();
             if !candidates.is_empty() {
                 eprintln!("Warning: similar task(s) already exist:");
-                for task in candidates { eprintln!("  {} {} - {}", task.task_type, task.id, task.subject); }
+                for task in candidates {
+                    eprintln!("  {} {} - {}", task.task_type, task.id, task.subject);
+                }
             }
 
             // Find the next available task ID, considering git history
@@ -418,26 +462,26 @@ async fn main() -> Result<()> {
                 doc.tasks.next_id()
             };
 
-            let mut new_task = Task::new(
-                next_id,
-                TaskType::parse(task_type),
-                subject.clone(),
-            );
+            let mut new_task = Task::new(next_id, TaskType::parse(task_type), subject.clone());
 
             if let Some(b) = body {
                 new_task.set_body(b.clone());
             }
 
             if let Some(a) = assignee {
+                validate_property_value(a)?;
                 new_task.set_assignee(a.clone());
             } else if let Some(default) = doc.team.default_assignee() {
+                validate_property_value(&default.name)?;
                 new_task.set_assignee(default.name.clone());
             }
 
             if let Some(s) = status {
+                validate_property_value(s)?;
                 warn_if_new_status(&doc, s);
                 new_task.set_status(s.clone());
             }
+            touch_task(&mut new_task);
 
             doc.tasks.add(new_task);
 
@@ -456,7 +500,9 @@ async fn main() -> Result<()> {
             if doc.tasks.find_by_id(task_id).is_some() {
                 ensure_close_is_recoverable(&cli.file)?;
                 let dependency_errors = validate_dependencies(&doc);
-                if !dependency_errors.is_empty() { anyhow::bail!("Refusing to close: {}", dependency_errors.join("; ")); }
+                if !dependency_errors.is_empty() {
+                    anyhow::bail!("Refusing to close: {}", dependency_errors.join("; "));
+                }
                 ensure_close_ready(&doc, task_id)?;
                 let task = doc.tasks.remove(task_id).expect("task checked above");
                 let new_content = parser::serialize(&doc);
@@ -470,12 +516,14 @@ async fn main() -> Result<()> {
         }
 
         Commands::Assign { id, assignee } => {
+            validate_property_value(assignee)?;
             let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
             let mut doc = parser::parse(&content)?;
 
             let task_id = TaskId::new(*id)?;
             if let Some(task) = doc.tasks.find_by_id_mut(task_id) {
                 task.set_assignee(assignee.clone());
+                touch_task(task);
 
                 let new_content = parser::serialize(&doc);
                 fs::write(&cli.file, new_content).context("Failed to write frump.md file")?;
@@ -496,11 +544,22 @@ async fn main() -> Result<()> {
 
             let task_id = TaskId::new(*id)?;
             let prop_key = PropertyKey::new(property)?;
+            validate_property_value(value)?;
 
-            if property == "Status" { warn_if_new_status(&doc, value); }
+            if property == LAST_UPDATED_PROPERTY {
+                anyhow::bail!(
+                    "{} is managed automatically and cannot be set directly.",
+                    LAST_UPDATED_PROPERTY
+                );
+            }
+
+            if property == "Status" {
+                warn_if_new_status(&doc, value);
+            }
 
             if let Some(task) = doc.tasks.find_by_id_mut(task_id) {
                 task.set_property(prop_key, value.clone());
+                touch_task(task);
 
                 let new_content = parser::serialize(&doc);
                 fs::write(&cli.file, new_content).context("Failed to write frump.md file")?;
@@ -515,15 +574,32 @@ async fn main() -> Result<()> {
             let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
             let mut doc = parser::parse(&content)?;
             let key = PropertyKey::new(property)?;
-            let task = doc.tasks.find_by_id_mut(TaskId::new(*id)?).ok_or_else(|| anyhow::anyhow!("Task {} not found.", id))?;
-            if task.get_property(&key).is_none() { anyhow::bail!("Task {} has no {} property.", id, property); }
+            if property == LAST_UPDATED_PROPERTY {
+                anyhow::bail!(
+                    "{} is managed automatically and cannot be removed.",
+                    LAST_UPDATED_PROPERTY
+                );
+            }
+            let task = doc
+                .tasks
+                .find_by_id_mut(TaskId::new(*id)?)
+                .ok_or_else(|| anyhow::anyhow!("Task {} not found.", id))?;
+            if task.get_property(&key).is_none() {
+                anyhow::bail!("Task {} has no {} property.", id, property);
+            }
             task.remove_property(&key);
-            fs::write(&cli.file, parser::serialize(&doc)).context("Failed to write frump.md file")?;
+            touch_task(task);
+            fs::write(&cli.file, parser::serialize(&doc))
+                .context("Failed to write frump.md file")?;
             println!("Removed {} from task {}", property, id);
         }
 
         Commands::History { id } => {
-            let repo = FrumpRepo::open(".").map_err(|_| anyhow::anyhow!("Task history requires a Git repository containing tracked frump.md history."))?;
+            let repo = FrumpRepo::open(".").map_err(|_| {
+                anyhow::anyhow!(
+                    "Task history requires a Git repository containing tracked frump.md history."
+                )
+            })?;
             let task_id = TaskId::new(*id)?;
             let history = repo.task_history(task_id)?;
 
@@ -538,7 +614,12 @@ async fn main() -> Result<()> {
                         ChangeType::Deleted => "✗ Deleted",
                     };
 
-                    println!("{} by {} on {}", change_icon, commit.author, commit.date.format("%Y-%m-%d %H:%M"));
+                    println!(
+                        "{} by {} on {}",
+                        change_icon,
+                        commit.author,
+                        commit.date.format("%Y-%m-%d %H:%M")
+                    );
                     println!("  Commit: {}", &commit.hash[..8]);
                     if !commit.message.is_empty() {
                         // Show first line of commit message
@@ -565,7 +646,12 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Update { id, subject, body, append_body } => {
+        Commands::Update {
+            id,
+            subject,
+            body,
+            append_body,
+        } => {
             if subject.is_none() && body.is_none() && append_body.is_none() {
                 println!("Error: At least one of --subject or --body must be provided");
                 return Ok(());
@@ -585,9 +671,10 @@ async fn main() -> Result<()> {
                     println!("Updated body for task {}", id);
                 }
                 if let Some(extra) = append_body {
-                    let combined = if task.body.is_empty() { extra.clone() } else { format!("{}\n\n{}", task.body, extra) };
-                    task.set_body(combined);
+                    append_update(task, extra, current_crew_agent().as_deref())?;
                     println!("Appended body for task {}", id);
+                } else {
+                    touch_task(task);
                 }
 
                 let new_content = parser::serialize(&doc);
@@ -616,15 +703,28 @@ async fn main() -> Result<()> {
                 }
             }
 
-            found.sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| right.2.cmp(&left.2)));
+            found.sort_by(|left, right| {
+                right
+                    .1
+                    .total_cmp(&left.1)
+                    .then_with(|| right.2.cmp(&left.2))
+            });
 
             if found.is_empty() {
                 println!("No tasks found matching '{}'", query);
             } else {
-                println!("Found {} similar task(s) matching '{}':\n", found.len(), query);
+                println!(
+                    "Found {} similar task(s) matching '{}':\n",
+                    found.len(),
+                    query
+                );
                 for (task, score, subject_match) in found {
                     println!("{} {} - {}", task.task_type, task.id, task.subject);
-                    println!("  Similarity: {:.0}% ({})", score * 100.0, if subject_match { "subject" } else { "body" });
+                    println!(
+                        "  Similarity: {:.0}% ({})",
+                        score * 100.0,
+                        if subject_match { "subject" } else { "body" }
+                    );
                     if *full && !task.body.is_empty() {
                         // Show a snippet of the body
                         let snippet = task.body.lines().take(2).collect::<Vec<_>>().join(" ");
@@ -741,12 +841,15 @@ async fn main() -> Result<()> {
                     if dependency_errors.is_empty() {
                         println!("✓ Dependencies resolve and are acyclic");
                     } else {
-                        for error in dependency_errors { println!("✗ {}", error); }
+                        for error in dependency_errors {
+                            println!("✗ {}", error);
+                        }
                         anyhow::bail!("Dependency validation failed");
                     }
 
                     // Check for sequential IDs
-                    let mut ids_vec: Vec<_> = doc.tasks.tasks().iter().map(|t| t.id.value()).collect();
+                    let mut ids_vec: Vec<_> =
+                        doc.tasks.tasks().iter().map(|t| t.id.value()).collect();
                     ids_vec.sort();
                     let mut gaps = Vec::new();
                     for i in 1..ids_vec.len() {
@@ -771,9 +874,11 @@ async fn main() -> Result<()> {
                     // Validate team emails
                     // Email is already validated by the Email type during parsing
 
-                    println!("\n✓ Validation complete: {} tasks, {} team members",
-                             doc.tasks.len(),
-                             doc.team.len());
+                    println!(
+                        "\n✓ Validation complete: {} tasks, {} team members",
+                        doc.tasks.len(),
+                        doc.team.len()
+                    );
                 }
                 Err(e) => {
                     println!("✗ Validation failed: {}", e);
@@ -782,27 +887,49 @@ async fn main() -> Result<()> {
         }
 
         Commands::Init { title } => {
-            if cli.file.exists() { anyhow::bail!("{} already exists; refusing to overwrite it.", cli.file.display()); }
-            fs::write(&cli.file, format!("# {}\n\n## Team\n\n## Tasks\n", title)).with_context(|| format!("Failed to initialize {}", cli.file.display()))?;
+            if cli.file.exists() {
+                anyhow::bail!(
+                    "{} already exists; refusing to overwrite it.",
+                    cli.file.display()
+                );
+            }
+            fs::write(&cli.file, format!("# {}\n\n## Team\n\n## Tasks\n", title))
+                .with_context(|| format!("Failed to initialize {}", cli.file.display()))?;
             println!("Initialized {}", cli.file.display());
         }
 
         Commands::Deps { id } => {
             let doc = read_document(&cli.file)?;
-            print_dependency_tree(&doc, TaskId::new(*id)?, 0, &mut std::collections::HashSet::new())?;
+            print_dependency_tree(
+                &doc,
+                TaskId::new(*id)?,
+                0,
+                &mut std::collections::HashSet::new(),
+            )?;
         }
 
         Commands::Dependents { id } => {
             let doc = read_document(&cli.file)?;
             let id = TaskId::new(*id)?;
-            for task in doc.tasks.tasks().iter().filter(|task| dependency_ids(task).iter().any(|dependency| *dependency == id)) {
+            for task in doc.tasks.tasks().iter().filter(|task| {
+                dependency_ids(task)
+                    .iter()
+                    .any(|dependency| *dependency == id)
+            }) {
                 println!("{} {} - {}", task.task_type, task.id, task.subject);
             }
         }
 
         Commands::Ready => {
             let doc = read_document(&cli.file)?;
-            for task in doc.tasks.tasks().iter().filter(|task| dependency_ids(task).iter().all(|dependency| doc.tasks.find_by_id(*dependency).map(|prerequisite| prerequisite.status() == Some("done")).unwrap_or(true))) {
+            for task in doc.tasks.tasks().iter().filter(|task| {
+                dependency_ids(task).iter().all(|dependency| {
+                    doc.tasks
+                        .find_by_id(*dependency)
+                        .map(|prerequisite| prerequisite.status() == Some("done"))
+                        .unwrap_or(true)
+                })
+            }) {
                 println!("{} {} - {}", task.task_type, task.id, task.subject);
             }
         }
@@ -815,14 +942,16 @@ async fn main() -> Result<()> {
                 "json" => export_json(&doc)?,
                 "csv" => export_csv(&doc)?,
                 _ => {
-                    println!("Error: Unknown format '{}'. Supported formats: json, csv", format);
+                    println!(
+                        "Error: Unknown format '{}'. Supported formats: json, csv",
+                        format
+                    );
                     return Ok(());
                 }
             };
 
             if let Some(output_path) = output {
-                fs::write(output_path, &exported)
-                    .context("Failed to write output file")?;
+                fs::write(output_path, &exported).context("Failed to write output file")?;
                 println!("Exported {} tasks to {:?}", doc.tasks.len(), output_path);
             } else {
                 println!("{}", exported);
@@ -830,19 +959,20 @@ async fn main() -> Result<()> {
         }
 
         Commands::Import { file, merge } => {
-            let import_content = fs::read_to_string(file)
-                .context("Failed to read import file")?;
+            let import_content = fs::read_to_string(file).context("Failed to read import file")?;
 
             let imported_doc = import_json(&import_content)?;
 
             if *merge {
                 // Merge: add imported tasks to existing document
-                let current_content = fs::read_to_string(&cli.file)
-                    .context("Failed to read current frump.md")?;
+                let current_content =
+                    fs::read_to_string(&cli.file).context("Failed to read current frump.md")?;
                 let mut current_doc = parser::parse(&current_content)?;
 
                 // Find next available ID
-                let mut next_id = current_doc.tasks.max_id()
+                let mut next_id = current_doc
+                    .tasks
+                    .max_id()
                     .map(|id| id.value() + 1)
                     .unwrap_or(1);
 
@@ -850,16 +980,15 @@ async fn main() -> Result<()> {
                 let mut added = 0;
                 for task in imported_doc.tasks.tasks() {
                     let new_id = TaskId::new(next_id)?;
-                    let mut new_task = Task::new(
-                        new_id,
-                        task.task_type.clone(),
-                        task.subject.clone(),
-                    );
+                    let mut new_task =
+                        Task::new(new_id, task.task_type.clone(), task.subject.clone());
                     new_task.set_body(task.body.clone());
 
                     for prop in &task.properties {
+                        validate_property_value(&prop.value)?;
                         new_task.add_property(prop.key.clone(), prop.value.clone());
                     }
+                    touch_task(&mut new_task);
 
                     current_doc.tasks.add(new_task);
                     next_id += 1;
@@ -867,19 +996,19 @@ async fn main() -> Result<()> {
                 }
 
                 let new_content = parser::serialize(&current_doc);
-                fs::write(&cli.file, new_content)
-                    .context("Failed to write frump.md")?;
+                fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
 
                 println!("Merged {} tasks into frump.md", added);
             } else {
                 // Replace: overwrite with imported document
                 let new_content = parser::serialize(&imported_doc);
-                fs::write(&cli.file, new_content)
-                    .context("Failed to write frump.md")?;
+                fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
 
-                println!("Imported {} tasks, {} team members",
-                         imported_doc.tasks.len(),
-                         imported_doc.team.len());
+                println!(
+                    "Imported {} tasks, {} team members",
+                    imported_doc.tasks.len(),
+                    imported_doc.team.len()
+                );
             }
         }
 
@@ -887,7 +1016,12 @@ async fn main() -> Result<()> {
             let manager = TemplateManager::new();
 
             match action {
-                TemplateAction::Add { name, task_type, subject, body } => {
+                TemplateAction::Add {
+                    name,
+                    task_type,
+                    subject,
+                    body,
+                } => {
                     let template = TaskTemplate {
                         name: name.clone(),
                         task_type: task_type.clone(),
@@ -971,13 +1105,18 @@ async fn main() -> Result<()> {
                     println!("Closed {} task(s) with status '{}'", count, status);
                 }
 
-                BulkAction::AssignByType { task_type, assignee } => {
+                BulkAction::AssignByType {
+                    task_type,
+                    assignee,
+                } => {
+                    validate_property_value(assignee)?;
                     let filter_type = TaskType::parse(task_type);
                     let mut count = 0;
 
                     for task in doc.tasks.tasks_mut() {
                         if task.task_type == filter_type {
                             task.set_assignee(assignee.clone());
+                            touch_task(task);
                             count += 1;
                         }
                     }
@@ -990,16 +1129,31 @@ async fn main() -> Result<()> {
                     let new_content = parser::serialize(&doc);
                     fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
 
-                    println!("Assigned {} task(s) of type '{}' to {}", count, task_type, assignee);
+                    println!(
+                        "Assigned {} task(s) of type '{}' to {}",
+                        count, task_type, assignee
+                    );
                 }
 
-                BulkAction::SetByStatus { status, property, value } => {
+                BulkAction::SetByStatus {
+                    status,
+                    property,
+                    value,
+                } => {
                     let prop_key = PropertyKey::new(property)?;
+                    validate_property_value(value)?;
+                    if property == LAST_UPDATED_PROPERTY {
+                        anyhow::bail!(
+                            "{} is managed automatically and cannot be set directly.",
+                            LAST_UPDATED_PROPERTY
+                        );
+                    }
                     let mut count = 0;
 
                     for task in doc.tasks.tasks_mut() {
                         if task.status().map(|s| s == status).unwrap_or(false) {
                             task.set_property(prop_key.clone(), value.clone());
+                            touch_task(task);
                             count += 1;
                         }
                     }
@@ -1012,8 +1166,10 @@ async fn main() -> Result<()> {
                     let new_content = parser::serialize(&doc);
                     fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
 
-                    println!("Set {} = {} on {} task(s) with status '{}'",
-                             property, value, count, status);
+                    println!(
+                        "Set {} = {} on {} task(s) with status '{}'",
+                        property, value, count, status
+                    );
                 }
             }
         }
@@ -1023,9 +1179,13 @@ async fn main() -> Result<()> {
             let doc = parser::parse(&content)?;
 
             // Find duplicate IDs
-            let mut id_occurrences: std::collections::HashMap<TaskId, Vec<&Task>> = std::collections::HashMap::new();
+            let mut id_occurrences: std::collections::HashMap<TaskId, Vec<&Task>> =
+                std::collections::HashMap::new();
             for task in doc.tasks.tasks() {
-                id_occurrences.entry(task.id).or_insert_with(Vec::new).push(task);
+                id_occurrences
+                    .entry(task.id)
+                    .or_insert_with(Vec::new)
+                    .push(task);
             }
 
             let duplicates: Vec<_> = id_occurrences
@@ -1054,9 +1214,13 @@ async fn main() -> Result<()> {
             let mut doc = parser::parse(&content)?;
 
             // Find duplicate IDs
-            let mut id_occurrences: std::collections::HashMap<TaskId, Vec<usize>> = std::collections::HashMap::new();
+            let mut id_occurrences: std::collections::HashMap<TaskId, Vec<usize>> =
+                std::collections::HashMap::new();
             for (idx, task) in doc.tasks.tasks().iter().enumerate() {
-                id_occurrences.entry(task.id).or_insert_with(Vec::new).push(idx);
+                id_occurrences
+                    .entry(task.id)
+                    .or_insert_with(Vec::new)
+                    .push(idx);
             }
 
             let duplicates: Vec<_> = id_occurrences
@@ -1071,7 +1235,10 @@ async fn main() -> Result<()> {
             }
 
             // Find the maximum ID in the document
-            let max_id = doc.tasks.max_id().ok_or_else(|| anyhow::anyhow!("No tasks found"))?;
+            let max_id = doc
+                .tasks
+                .max_id()
+                .ok_or_else(|| anyhow::anyhow!("No tasks found"))?;
             let mut next_id = max_id.next();
 
             // Renumber conflicting tasks (keep first occurrence, renumber the rest)
@@ -1082,6 +1249,7 @@ async fn main() -> Result<()> {
                     let task = &mut doc.tasks.tasks_mut()[idx];
                     let old_id = task.id;
                     task.id = next_id;
+                    touch_task(task);
                     renumbered.push((old_id, next_id, task.subject.clone()));
                     next_id = next_id.next();
                 }
@@ -1143,12 +1311,21 @@ fn ensure_close_is_recoverable(file: &Path) -> Result<()> {
         .output()
         .context("Failed to locate the Git repository for task closure")?;
     if !root_output.status.success() {
-        anyhow::bail!("Refusing to close a task: {} is not in a Git repository.", file.display());
+        anyhow::bail!(
+            "Refusing to close a task: {} is not in a Git repository.",
+            file.display()
+        );
     }
     let root = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
-    let absolute_file = file.canonicalize().with_context(|| format!("Failed to resolve {}", file.display()))?;
-    let repository_path = absolute_file.strip_prefix(&root)
-        .map_err(|_| anyhow::anyhow!("Refusing to close a task: {} is outside the current Git repository.", file.display()))?;
+    let absolute_file = file
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve {}", file.display()))?;
+    let repository_path = absolute_file.strip_prefix(&root).map_err(|_| {
+        anyhow::anyhow!(
+            "Refusing to close a task: {} is outside the current Git repository.",
+            file.display()
+        )
+    })?;
     let status = std::process::Command::new("git")
         .current_dir(&root)
         .args(["ls-files", "--error-unmatch", "--"])
@@ -1167,44 +1344,76 @@ fn ensure_close_is_recoverable(file: &Path) -> Result<()> {
 }
 
 fn discover_task_file() -> Result<PathBuf> {
-    let mut directory = std::env::current_dir().context("Failed to determine the current directory")?;
+    let mut directory =
+        std::env::current_dir().context("Failed to determine the current directory")?;
     loop {
         let candidate = directory.join("frump.md");
         match fs::metadata(&candidate) {
             Ok(metadata) if metadata.is_file() => return Ok(candidate),
             Ok(_) => anyhow::bail!("{} exists but is not a regular file", candidate.display()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error).with_context(|| format!("Failed to inspect {}", candidate.display())),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to inspect {}", candidate.display()))
+            }
         }
         let Some(parent) = directory.parent() else {
             anyhow::bail!("No frump.md found from the current directory through the filesystem root. Pass --file explicitly or run frump init.");
         };
-        if parent == directory { anyhow::bail!("No frump.md found from the current directory through the filesystem root. Pass --file explicitly or run frump init."); }
+        if parent == directory {
+            anyhow::bail!("No frump.md found from the current directory through the filesystem root. Pass --file explicitly or run frump init.");
+        }
         directory = parent.to_path_buf();
     }
 }
 
 fn commit_task_file(file: &Path, message: &str) -> Result<()> {
     let parent = file.parent().unwrap_or_else(|| Path::new("."));
-    let name = file.file_name().ok_or_else(|| anyhow::anyhow!("Task file path has no filename"))?;
-    let add = std::process::Command::new("git").current_dir(parent).args(["add", "--"]).arg(name).status()
+    let name = file
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Task file path has no filename"))?;
+    let add = std::process::Command::new("git")
+        .current_dir(parent)
+        .args(["add", "--"])
+        .arg(name)
+        .status()
         .context("Failed to stage task file")?;
-    if !add.success() { anyhow::bail!("Git could not stage {}", file.display()); }
-    let commit = std::process::Command::new("git").current_dir(parent).args(["commit", "-m", message, "--", name.to_str().unwrap_or("frump.md")]).status()
+    if !add.success() {
+        anyhow::bail!("Git could not stage {}", file.display());
+    }
+    let commit = std::process::Command::new("git")
+        .current_dir(parent)
+        .args([
+            "commit",
+            "-m",
+            message,
+            "--",
+            name.to_str().unwrap_or("frump.md"),
+        ])
+        .status()
         .context("Failed to commit task file")?;
-    if !commit.success() { anyhow::bail!("Git could not create a commit for {}", file.display()); }
+    if !commit.success() {
+        anyhow::bail!("Git could not create a commit for {}", file.display());
+    }
     Ok(())
 }
 
 fn ensure_close_ready(doc: &frump::FrumpDoc, id: TaskId) -> Result<()> {
-    let task = doc.tasks.find_by_id(id).ok_or_else(|| anyhow::anyhow!("Task {} not found.", id))?;
+    let task = doc
+        .tasks
+        .find_by_id(id)
+        .ok_or_else(|| anyhow::anyhow!("Task {} not found.", id))?;
     if task.status() != Some("done") {
         anyhow::bail!("Refusing to close task {}: Status must be done.", id);
     }
     for dependency in dependency_ids(task) {
         if let Some(prerequisite) = doc.tasks.find_by_id(dependency) {
             if prerequisite.status() != Some("done") {
-                anyhow::bail!("Refusing to close task {}: dependency {} is not done.", id, dependency);
+                anyhow::bail!(
+                    "Refusing to close task {}: dependency {} is not done.",
+                    id,
+                    dependency
+                );
             }
         }
     }
@@ -1214,61 +1423,157 @@ fn ensure_close_ready(doc: &frump::FrumpDoc, id: TaskId) -> Result<()> {
 fn normalize_search_text(value: &str) -> String {
     value
         .chars()
-        .map(|character| if matches!(character, '-' | '_') { ' ' } else { character })
+        .map(|character| {
+            if matches!(character, '-' | '_') {
+                ' '
+            } else {
+                character
+            }
+        })
         .collect::<String>()
         .to_lowercase()
 }
 
 fn warn_if_new_status(doc: &frump::FrumpDoc, status: &str) {
-    let existing: std::collections::HashSet<_> = doc.tasks.tasks().iter().filter_map(|task| task.status()).collect();
+    let existing: std::collections::HashSet<_> = doc
+        .tasks
+        .tasks()
+        .iter()
+        .filter_map(|task| task.status())
+        .collect();
     if !existing.contains(status) {
         eprintln!("Warning: '{}' is a new status. Prefer an existing status unless there is a documented reason.", status);
     }
 }
 
+fn touch_task(task: &mut Task) {
+    mark_updated(task, &now_utc());
+}
+
+fn current_crew_agent() -> Option<String> {
+    std::env::var("METATEAM_CREW_AGENT").ok()
+}
+
 fn read_document(file: &Path) -> Result<frump::FrumpDoc> {
-    parser::parse(&fs::read_to_string(file).with_context(|| format!("Failed to read {}", file.display()))?)
+    parser::parse(
+        &fs::read_to_string(file).with_context(|| format!("Failed to read {}", file.display()))?,
+    )
 }
 
 fn dependency_ids(task: &Task) -> Vec<TaskId> {
     task.get_property(&PropertyKey::new("Depends On").expect("constant is valid"))
-        .map(|value| value.split(',').filter_map(|id| id.trim().parse::<u32>().ok()).filter_map(|id| TaskId::new(id).ok()).collect())
+        .map(|value| {
+            value
+                .split(',')
+                .filter_map(|id| id.trim().parse::<u32>().ok())
+                .filter_map(|id| TaskId::new(id).ok())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 fn validate_dependencies(doc: &frump::FrumpDoc) -> Vec<String> {
     let ids: std::collections::HashSet<_> = doc.tasks.tasks().iter().map(|task| task.id).collect();
-    let closed: std::collections::HashSet<_> = FrumpRepo::open(".").ok().and_then(|repo| repo.deleted_tasks().ok()).unwrap_or_default().into_iter().map(|(id, _, _)| id).collect();
+    let closed: std::collections::HashSet<_> = FrumpRepo::open(".")
+        .ok()
+        .and_then(|repo| repo.deleted_tasks().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
     let mut errors = Vec::new();
     for task in doc.tasks.tasks() {
-        if let Some(value) = task.get_property(&PropertyKey::new("Depends On").expect("constant is valid")) {
+        if let Some(value) =
+            task.get_property(&PropertyKey::new("Depends On").expect("constant is valid"))
+        {
             for raw in value.split(',') {
-                if raw.trim().is_empty() || raw.trim().parse::<u32>().ok().and_then(|id| TaskId::new(id).ok()).is_none() {
-                    errors.push(format!("Task {} has invalid Depends On value '{}'", task.id, raw.trim()));
+                if raw.trim().is_empty()
+                    || raw
+                        .trim()
+                        .parse::<u32>()
+                        .ok()
+                        .and_then(|id| TaskId::new(id).ok())
+                        .is_none()
+                {
+                    errors.push(format!(
+                        "Task {} has invalid Depends On value '{}'",
+                        task.id,
+                        raw.trim()
+                    ));
                 }
             }
         }
         for dependency in dependency_ids(task) {
-            if dependency == task.id { errors.push(format!("Task {} depends on itself", task.id)); }
-            else if !ids.contains(&dependency) && !closed.contains(&dependency) { errors.push(format!("Task {} references unknown dependency {}", task.id, dependency)); }
+            if dependency == task.id {
+                errors.push(format!("Task {} depends on itself", task.id));
+            } else if !ids.contains(&dependency) && !closed.contains(&dependency) {
+                errors.push(format!(
+                    "Task {} references unknown dependency {}",
+                    task.id, dependency
+                ));
+            }
         }
     }
-    fn visit(id: TaskId, doc: &frump::FrumpDoc, visiting: &mut std::collections::HashSet<TaskId>, visited: &mut std::collections::HashSet<TaskId>) -> bool {
-        if visited.contains(&id) { return false; }
-        if !visiting.insert(id) { return true; }
-        let cyclic = doc.tasks.find_by_id(id).map(|task| dependency_ids(task).into_iter().filter(|dependency| doc.tasks.find_by_id(*dependency).is_some()).any(|dependency| visit(dependency, doc, visiting, visited))).unwrap_or(false);
-        visiting.remove(&id); visited.insert(id); cyclic
+    fn visit(
+        id: TaskId,
+        doc: &frump::FrumpDoc,
+        visiting: &mut std::collections::HashSet<TaskId>,
+        visited: &mut std::collections::HashSet<TaskId>,
+    ) -> bool {
+        if visited.contains(&id) {
+            return false;
+        }
+        if !visiting.insert(id) {
+            return true;
+        }
+        let cyclic = doc
+            .tasks
+            .find_by_id(id)
+            .map(|task| {
+                dependency_ids(task)
+                    .into_iter()
+                    .filter(|dependency| doc.tasks.find_by_id(*dependency).is_some())
+                    .any(|dependency| visit(dependency, doc, visiting, visited))
+            })
+            .unwrap_or(false);
+        visiting.remove(&id);
+        visited.insert(id);
+        cyclic
     }
-    let mut visiting = std::collections::HashSet::new(); let mut visited = std::collections::HashSet::new();
-    for task in doc.tasks.tasks() { if visit(task.id, doc, &mut visiting, &mut visited) { errors.push("Dependency cycle detected".to_string()); break; } }
+    let mut visiting = std::collections::HashSet::new();
+    let mut visited = std::collections::HashSet::new();
+    for task in doc.tasks.tasks() {
+        if visit(task.id, doc, &mut visiting, &mut visited) {
+            errors.push("Dependency cycle detected".to_string());
+            break;
+        }
+    }
     errors
 }
 
-fn print_dependency_tree(doc: &frump::FrumpDoc, id: TaskId, depth: usize, seen: &mut std::collections::HashSet<TaskId>) -> Result<()> {
-    let task = doc.tasks.find_by_id(id).ok_or_else(|| anyhow::anyhow!("Task {} not found.", id))?;
-    println!("{}{} {} - {}", "  ".repeat(depth), task.task_type, task.id, task.subject);
-    if !seen.insert(id) { return Ok(()); }
-    for dependency in dependency_ids(task) { print_dependency_tree(doc, dependency, depth + 1, seen)?; }
+fn print_dependency_tree(
+    doc: &frump::FrumpDoc,
+    id: TaskId,
+    depth: usize,
+    seen: &mut std::collections::HashSet<TaskId>,
+) -> Result<()> {
+    let task = doc
+        .tasks
+        .find_by_id(id)
+        .ok_or_else(|| anyhow::anyhow!("Task {} not found.", id))?;
+    println!(
+        "{}{} {} - {}",
+        "  ".repeat(depth),
+        task.task_type,
+        task.id,
+        task.subject
+    );
+    if !seen.insert(id) {
+        return Ok(());
+    }
+    for dependency in dependency_ids(task) {
+        print_dependency_tree(doc, dependency, depth + 1, seen)?;
+    }
     Ok(())
 }
 
@@ -1293,17 +1598,27 @@ fn search_similarity(query: &str, value: &str) -> f64 {
 
 fn all_query_tokens_match(query: &str, subject: &str, body: &str) -> bool {
     let query_tokens: Vec<_> = query.split_whitespace().collect();
-    let searchable = format!("{} {}", normalize_search_text(subject), normalize_search_text(body));
+    let searchable = format!(
+        "{} {}",
+        normalize_search_text(subject),
+        normalize_search_text(body)
+    );
     let searchable_tokens: Vec<_> = searchable.split_whitespace().collect();
     query_tokens.iter().all(|query_token| {
-        searchable_tokens.iter().any(|candidate| strsim::normalized_levenshtein(query_token, candidate) >= 0.80)
+        searchable_tokens
+            .iter()
+            .any(|candidate| strsim::normalized_levenshtein(query_token, candidate) >= 0.80)
     })
 }
 
 fn acquire_write_lock(file: &Path) -> Result<std::fs::File> {
     use fs2::FileExt;
-    let lock = OpenOptions::new().read(true).write(true).open(file)
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(file)
         .with_context(|| format!("Failed to open {} for locking", file.display()))?;
-    lock.lock_exclusive().with_context(|| format!("Failed to acquire write lock for {}", file.display()))?;
+    lock.lock_exclusive()
+        .with_context(|| format!("Failed to acquire write lock for {}", file.display()))?;
     Ok(lock)
 }
