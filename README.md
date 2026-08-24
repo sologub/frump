@@ -104,9 +104,14 @@ columns, `Escape` closes the dialog.
 
 Task bodies are rendered as Markdown on the cards — emphasis, inline code, code
 blocks, lists, quotes and links. Clicking a card opens the task beside the
-board, so the columns stay usable and draggable while you read or edit; a button
-in the task header switches to full screen and back, and the choice is
-remembered. An unedited body opens scrolled to its end, because task bodies grow
+board, below the toolbar, so the header, the search box and the columns all keep
+working while you read or edit. Drag the divider to resize the panel, or use the
+arrow keys on it; double click resets it. It resizes freely: the only limits are
+keeping the divider on screen and the panel wide enough to grab again. A button in the task header switches
+to full screen and back, and both the mode and the width are remembered. The
+task view lays itself out from the width it actually has, not from the mode: a
+panel dragged wide gets the same two-column form as full screen, and full screen
+in a small window stacks like a narrow panel. An unedited body opens scrolled to its end, because task bodies grow
 as a log. A value that changes in the file while the task is open blinks in
 place, and the card it belongs to blinks on the board.
 The body field knows Markdown while you type: Enter continues a list or a quote

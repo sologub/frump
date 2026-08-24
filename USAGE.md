@@ -86,7 +86,8 @@ and quotes as you type, renumbers ordered lists, indents with Tab, wraps the
 selection with Ctrl+B, Ctrl+I and Ctrl+K, and saves with Ctrl+Enter. Status,
 type and property values are offered as dropdowns built from the values already
 used in the file, and still accept new values. Clicking a card opens it beside the board,
-with a header button to switch to full screen and back. Sorting includes `Last
+under the toolbar; the divider resizes the panel by drag or arrow keys and a
+double click resets it, and a header button switches to full screen and back. Sorting includes `Last
 updated`, newest first, from the `Last Updated` property; tasks without one sort
 last. The board refreshes in place — unchanged cards keep their scroll
 position and focus, changed cards flash — and a refresh never interrupts a drag.

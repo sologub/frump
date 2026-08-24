@@ -371,22 +371,46 @@
     block-size: 100dvh; max-block-size: 100dvh;
     background: var(--page); color: var(--text);
   }
+  /* Docked, the task is a column of the page grid beside the board, not a sheet
+     laid over it: the header, the search box, the filters and the board's own
+     controls all keep their full width. */
+  body[data-editor="side"] { grid-template-columns: minmax(0, 1fr) var(--panel-w); }
+  body[data-editor="side"] > header  { grid-area: 1 / 1 / 2 / -1; }
+  body[data-editor="side"] > .toolbar { grid-area: 2 / 1 / 3 / -1; }
+  body[data-editor="side"] > #notice { grid-area: 3 / 1 / 4 / -1; }
+  body[data-editor="side"] > main    { grid-area: 4 / 1 / 5 / 2; }
   #modal[data-mode="side"] {
-    position: fixed;
-    inset-block: 0; inset-inline-end: 0; inset-inline-start: auto;
-    inline-size: var(--panel-w); max-inline-size: 100%;
+    position: relative;                     /* the splitter anchors to this edge */
+    grid-area: 4 / 2 / 5 / 3;
+    inline-size: auto; max-inline-size: none;
+    block-size: auto; min-block-size: 0; max-block-size: none;
+    background: var(--chrome);
     border-inline-start: 1px solid var(--line);
-    box-shadow: -14px 0 34px rgb(8 12 20 / .16);
   }
-  /* The board gives up exactly the docked width, so nothing hides behind it. */
-  body[data-editor="side"] main { margin-inline-end: var(--panel-w); }
+  #modal[data-mode="side"] .sheet { block-size: 100%; }
+  #modal[data-mode="side"] .sheet-head, #modal[data-mode="side"] .sheet .actions { background: var(--chrome); }
+
+  .resizer {
+    position: absolute; inset-block: 0; inset-inline-start: -5px;
+    inline-size: 11px; z-index: 2; cursor: col-resize; touch-action: none;
+  }
+  .resizer::before {
+    content: ''; position: absolute; inset-block: 0; inset-inline-start: 5px;
+    inline-size: 1px; background: transparent; transition: background-color .14s ease, inline-size .14s ease;
+  }
+  .resizer:hover::before, .resizer:focus-visible::before, .resizer[data-dragging]::before {
+    background: var(--accent); inline-size: 3px; inset-inline-start: 4px;
+  }
+  .resizer:focus-visible { outline: none; }
+  #modal[data-mode="full"] .resizer { display: none; }
+  body[data-resizing] { cursor: col-resize; user-select: none; }
   dialog::backdrop { background: rgb(8 12 20 / .5); }
   /* Flex, not positional grid rows: the conflict banner comes and goes, and with
      rows the footer inherited the growing row whenever it was hidden.
      --sheet-inline centres the content on a wide screen instead of stretching
      a text field across two thousand pixels. */
   .sheet {
-    --sheet-inline: max(var(--pad), calc((100% - 84rem) / 2));
+    --sheet-inline: var(--pad);
     display: flex; flex-direction: column;
     block-size: 100dvh; overflow: hidden;
   }
@@ -432,24 +456,51 @@
   .sheet-head .bare { font-size: 1rem; }
   /* Each column scrolls on its own, so the body area always fills the viewport
      exactly and a long property list cannot push the editor off-screen. */
+  /* The task view sizes itself from the space it actually has. A docked panel
+     dragged wide gets the same two-column treatment as full screen, and full
+     screen in a small window gets the stacked one; neither asks the viewport. */
+  #modal { container: task / inline-size; }
+
+  /* Base: one column, which is always safe. */
   .sheet-body {
     flex: 1 1 auto;
-    display: grid; grid-template-columns: minmax(0, 1fr) 22rem;
+    display: flex; flex-direction: column;
     gap: var(--pad); padding: var(--pad) var(--sheet-inline);
-    overflow: hidden; min-block-size: 0;
+    overflow: auto; min-block-size: 0;
   }
-  .sheet-main {
-    display: grid; grid-template-rows: auto minmax(0, 1fr); gap: .4rem;
-    min-block-size: 0;
-  }
-  /* Editing wants the full column; reading wants a measure. */
-  .sheet-main .preview { max-inline-size: 80ch; }
-  .body-field { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: .25rem; min-block-size: 0; }
-  .sheet-main textarea { block-size: 100%; min-block-size: 16rem; }
+  .sheet-main, .sheet-side { flex: none; }
+  .sheet-main { display: grid; grid-template-rows: auto auto; gap: .4rem; min-block-size: 0; }
+  .body-field { display: grid; grid-template-rows: auto auto auto; gap: .25rem; min-block-size: 0; }
+  .sheet-main textarea { block-size: auto; min-block-size: 11rem; }
+  /* Stacked, the fields read as a continuation of the form, not a card in a card. */
   .sheet-side {
-    display: grid; align-content: start; align-self: start; gap: .2rem;
-    background: var(--card); border: 1px solid var(--line); border-radius: var(--r-l); padding: .8rem;
-    max-block-size: 100%; overflow-y: auto; scrollbar-width: thin;
+    display: grid; align-content: start; align-self: stretch; gap: .2rem;
+    background: transparent; border: 0; border-radius: 0;
+    border-block-start: 1px solid var(--line);
+    padding: .8rem 0 0;
+    max-block-size: none; overflow: visible; scrollbar-width: thin;
+  }
+
+  @container task (width >= 90rem) {
+    .sheet { --sheet-inline: max(var(--pad), calc((100% - 84rem) / 2)); }
+  }
+  @container task (width >= 56rem) {
+    .sheet-body {
+      display: grid; grid-template-columns: minmax(0, 1fr) 22rem;
+      overflow: hidden;
+    }
+    .sheet-main { grid-template-rows: auto minmax(0, 1fr); }
+    .body-field { grid-template-rows: auto minmax(0, 1fr) auto; }
+    .sheet-main textarea { block-size: 100%; min-block-size: 16rem; }
+    .sheet-side {
+      align-self: start;
+      background: var(--card); border: 1px solid var(--line); border-radius: var(--r-l);
+      border-block-start-width: 1px; padding: .8rem;
+      position: sticky; inset-block-start: 0;
+      max-block-size: 100%; overflow-y: auto;
+    }
+    .subject-input { font-size: clamp(1.05rem, 1.4cqi + .8rem, 1.45rem); }
+    .sheet-head { padding-block: var(--pad); }
   }
   /* In the narrow rail a property reads better stacked than in three columns. */
   .sheet-side .properties { gap: .55rem; }
@@ -472,16 +523,7 @@
     align-items: center; margin-block-start: 0;
     padding: .7rem var(--sheet-inline); background: var(--chrome); border-block-start: 1px solid var(--line);
   }
-  /* Stacked is a state, not only a width: the docked panel is narrow too.
-     Grid tracks were sizing the main block to nothing and letting it overlap the
-     rail, and a sticky rail would park itself on top of the body. */
-  .sheet.stacked .sheet-body { display: flex; flex-direction: column; overflow: auto; }
-  .sheet.stacked .sheet-main, .sheet.stacked .sheet-side { flex: none; }
-  .sheet.stacked .sheet-side { position: static; align-self: stretch; max-block-size: none; overflow: visible; }
-  .sheet.stacked .sheet-main { grid-template-rows: auto auto; }
-  .sheet.stacked .body-field { grid-template-rows: auto auto auto; }
-  .sheet.stacked .sheet-main textarea { block-size: auto; min-block-size: 14rem; }
-  .sheet.stacked { --sheet-inline: var(--pad); }
+
   .properties { display: grid; gap: .3rem; }
   .property { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: .3rem; }
   .actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; justify-content: flex-end; margin-block-start: 1.1rem; }
@@ -585,6 +627,8 @@
 <p id="live" class="sr-only" role="status" aria-live="polite"></p>
 
 <dialog id="modal" aria-labelledby="editor-title">
+  <div id="panel-resizer" class="resizer" role="separator" aria-orientation="vertical" tabindex="0"
+       aria-label="Resize the task panel. Arrow keys resize, double click resets."></div>
   <form id="editor" class="sheet">
     <header class="sheet-head">
       <div class="sheet-heading">
@@ -1227,7 +1271,6 @@ const effectiveMode = () => (window.matchMedia(NARROW).matches ? 'full' : (prefs
 function applyEditorMode() {
   const mode = effectiveMode();
   modal.dataset.mode = mode;
-  $('.sheet', modal).classList.toggle('stacked', mode === 'side' || window.matchMedia(NARROW).matches);
   document.body.dataset.editor = modal.open && mode === 'side' ? 'side' : '';
   const full = mode === 'full', button = $('#editor-mode');
   button.replaceChildren(icon(full ? GLYPH.goSide : GLYPH.goFull));
@@ -1251,6 +1294,66 @@ function showEditor() {
   mode === 'full' ? modal.showModal() : modal.show();
   applyEditorMode();
 }
+
+/* The dock is a working surface, so its width is the reader's to choose and is
+   remembered like every other view preference. */
+/* The only real limits are mechanical: the divider has to stay grabbable, and a
+   panel too narrow to grab could not be dragged back. Everything between is the
+   reader's business, so there is no taste-based ceiling here. */
+const PANEL_MIN = 240, BOARD_MIN = 96;
+const panelMax = () => Math.max(PANEL_MIN, window.innerWidth - BOARD_MIN);
+const resizer = $('#panel-resizer');
+
+function panelWidthNow() {
+  return prefs.panelWidth || Math.round(modal.getBoundingClientRect().width) || PANEL_MIN;
+}
+function setPanelWidth(px, remember) {
+  const width = Math.round(Math.max(PANEL_MIN, Math.min(px, panelMax())));
+  document.documentElement.style.setProperty('--panel-w', width + 'px');
+  resizer.setAttribute('aria-valuenow', String(width));
+  resizer.setAttribute('aria-valuemin', String(PANEL_MIN));
+  resizer.setAttribute('aria-valuemax', String(Math.round(panelMax())));
+  if (remember) { prefs.panelWidth = width; savePrefs(); }
+  return width;
+}
+function resetPanelWidth() {
+  delete prefs.panelWidth;
+  savePrefs();
+  document.documentElement.style.removeProperty('--panel-w');
+  announce('Task panel width reset');
+}
+
+resizer.addEventListener('pointerdown', e => {
+  if (modal.dataset.mode !== 'side') return;
+  e.preventDefault();
+  resizer.setPointerCapture(e.pointerId);
+  resizer.dataset.dragging = '1';
+  document.body.dataset.resizing = '1';
+});
+resizer.addEventListener('pointermove', e => {
+  if (!resizer.dataset.dragging) return;
+  setPanelWidth(window.innerWidth - e.clientX, false);
+});
+const endResize = e => {
+  if (!resizer.dataset.dragging) return;
+  delete resizer.dataset.dragging;
+  delete document.body.dataset.resizing;
+  try { resizer.releasePointerCapture(e.pointerId); } catch {}
+  setPanelWidth(Math.round(modal.getBoundingClientRect().width), true);
+};
+resizer.addEventListener('pointerup', endResize);
+resizer.addEventListener('pointercancel', endResize);
+resizer.addEventListener('dblclick', resetPanelWidth);
+/* A splitter is operable from the keyboard, not only by dragging. */
+resizer.addEventListener('keydown', e => {
+  const step = e.shiftKey ? 96 : 24, width = panelWidthNow();
+  if (e.key === 'ArrowLeft') { e.preventDefault(); setPanelWidth(width + step, true); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); setPanelWidth(width - step, true); }
+  else if (e.key === 'Home') { e.preventDefault(); setPanelWidth(panelMax(), true); }
+  else if (e.key === 'End') { e.preventDefault(); setPanelWidth(PANEL_MIN, true); }
+  else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); resetPanelWidth(); }
+});
+window.addEventListener('resize', () => { if (prefs.panelWidth) setPanelWidth(prefs.panelWidth, false); });
 
 $('#editor-mode').onclick = () => {
   prefs.editorMode = effectiveMode() === 'full' ? 'side' : 'full';
@@ -2148,6 +2251,7 @@ combobox(form.task_type, () => taskTypes());
 markdownEditor(form.body);
 
 loadPrefs();
+if (prefs.panelWidth) setPanelWidth(prefs.panelWidth, false);
 applyEditorMode();
 syncPickers();
 $('#query').value = prefs.query || '';
