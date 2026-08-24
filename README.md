@@ -103,8 +103,12 @@ that work and says so; reopening the task restores it. Keyboard: `/` focuses sea
 columns, `Escape` closes the dialog.
 
 Task bodies are rendered as Markdown on the cards — emphasis, inline code, code
-blocks, lists, quotes and links. Clicking a card opens the task full screen:
-the Markdown body on the left, type, status and properties on a rail beside it.
+blocks, lists, quotes and links. Clicking a card opens the task beside the
+board, so the columns stay usable and draggable while you read or edit; a button
+in the task header switches to full screen and back, and the choice is
+remembered. An unedited body opens scrolled to its end, because task bodies grow
+as a log. A value that changes in the file while the task is open blinks in
+place, and the card it belongs to blinks on the board.
 The body field knows Markdown while you type: Enter continues a list or a quote
 and ends it on an empty item, ordered lists renumber, Tab and Shift+Tab indent
 within a list, Ctrl+B, Ctrl+I and Ctrl+K wrap the selection, and Ctrl+Enter

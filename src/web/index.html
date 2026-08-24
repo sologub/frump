@@ -56,6 +56,7 @@
     --hue-accent: var(--l-hue); --hue-soft: var(--l-hue-soft);
 
     --sheet-inline: var(--pad);      /* .sheet widens this to centre its content */
+    --panel-w: clamp(23rem, 34vw, 40rem);
     --r-s: 6px; --r-m: 9px; --r-l: 14px;
     --gap: .5rem;
     --pad: clamp(.75rem, 1.6vw, 1.1rem);
@@ -335,6 +336,12 @@
     from { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   }
   .card.updated { animation: card-updated 1.2s ease-out; }
+
+  /* The same idea inside the task: a value that changed in the file blinks once. */
+  @keyframes field-updated {
+    from { background: var(--accent-soft); box-shadow: 0 0 0 3px var(--accent-soft); }
+  }
+  .updated-field { animation: field-updated 1.2s ease-out; }
   :root[data-density="compact"] .card .body { display: none; }
   .card .chips { display: flex; flex-wrap: wrap; gap: .25rem; }
   .card .chip {
@@ -356,14 +363,23 @@
 }
 
 @layer editor {
-  /* Opening a task takes the whole viewport: the body is the point of the task,
-     so it gets a full reading column, with the fields on a rail beside it. */
+  /* A task opens beside the board by default, so the columns stay usable, and
+     can take the whole viewport on request. */
   dialog {
     border: 0; padding: 0; margin: 0;
     inline-size: 100%; max-inline-size: 100%;
     block-size: 100dvh; max-block-size: 100dvh;
     background: var(--page); color: var(--text);
   }
+  #modal[data-mode="side"] {
+    position: fixed;
+    inset-block: 0; inset-inline-end: 0; inset-inline-start: auto;
+    inline-size: var(--panel-w); max-inline-size: 100%;
+    border-inline-start: 1px solid var(--line);
+    box-shadow: -14px 0 34px rgb(8 12 20 / .16);
+  }
+  /* The board gives up exactly the docked width, so nothing hides behind it. */
+  body[data-editor="side"] main { margin-inline-end: var(--panel-w); }
   dialog::backdrop { background: rgb(8 12 20 / .5); }
   /* Flex, not positional grid rows: the conflict banner comes and goes, and with
      rows the footer inherited the growing row whenever it was hidden.
@@ -456,19 +472,16 @@
     align-items: center; margin-block-start: 0;
     padding: .7rem var(--sheet-inline); background: var(--chrome); border-block-start: 1px solid var(--line);
   }
-  /* Stacked, the rail is just another block: sticky would park it on top of the
-     body, and the filling rows have nothing left to fill. */
-  @media (width <= 62rem) {
-    /* Stacked, this is a simple column: grid tracks were sizing the main block
-       to nothing and letting it overlap the rail. */
-    .sheet-body { display: flex; flex-direction: column; overflow: auto; }
-    .sheet-main, .sheet-side { flex: none; }
-    /* align-self:start means "hug content" on the cross axis once this is a column. */
-    .sheet-side { position: static; align-self: stretch; max-block-size: none; overflow: visible; }
-    .sheet-main { grid-template-rows: auto auto; }
-    .body-field { grid-template-rows: auto auto auto; }
-    .sheet-main textarea, .sheet-main .preview { block-size: auto; min-block-size: 12rem; }
-  }
+  /* Stacked is a state, not only a width: the docked panel is narrow too.
+     Grid tracks were sizing the main block to nothing and letting it overlap the
+     rail, and a sticky rail would park itself on top of the body. */
+  .sheet.stacked .sheet-body { display: flex; flex-direction: column; overflow: auto; }
+  .sheet.stacked .sheet-main, .sheet.stacked .sheet-side { flex: none; }
+  .sheet.stacked .sheet-side { position: static; align-self: stretch; max-block-size: none; overflow: visible; }
+  .sheet.stacked .sheet-main { grid-template-rows: auto auto; }
+  .sheet.stacked .body-field { grid-template-rows: auto auto auto; }
+  .sheet.stacked .sheet-main textarea { block-size: auto; min-block-size: 14rem; }
+  .sheet.stacked { --sheet-inline: var(--pad); }
   .properties { display: grid; gap: .3rem; }
   .property { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: .3rem; }
   .actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; justify-content: flex-end; margin-block-start: 1.1rem; }
@@ -559,6 +572,7 @@
     <option value="id-desc">ID descending</option>
     <option value="subject">Subject A→Z</option>
     <option value="type">Type</option>
+    <option value="updated">Last updated</option>
   </select></label>
   <label class="picker"><span>Type</span><select id="type-filter"></select></label>
   <div class="sep" aria-hidden="true"></div>
@@ -579,6 +593,7 @@
       </div>
       <div class="sheet-head-actions">
         <button type="button" class="ghost" id="notify-open">Notify</button>
+        <button type="button" class="bare" id="editor-mode" aria-pressed="false"></button>
         <button type="button" class="bare" id="close" aria-label="Close task view">✕</button>
       </div>
     </header>
@@ -666,7 +681,8 @@
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const board = $('#board'), modal = $('#modal'), form = $('#editor');
-const STATUS = 'Status', UNSET = ' ';           /* sentinel for "property absent" */
+const STATUS = 'Status', UNSET = '\0';      /* sentinel for a property a task does not carry */
+const UPDATED = 'Last Updated';             /* written by the tools that touch a task */           /* sentinel for "property absent" */
 const PREFS_KEY = 'frump.board.prefs';
 
 let doc = { header: '', team: [], tasks: [] };
@@ -675,6 +691,7 @@ let editing = null, lastRevision = '', fileValid = true, docKey = 'default';
 const prefs = {
   theme: 'auto', density: 'cozy', groupBy: STATUS, sort: 'manual',
   type: '', hideEmpty: false, query: '',
+  editorMode: 'side',
   order: {},      /* docKey -> groupBy -> [column keys] */
   collapsed: {},  /* docKey -> groupBy -> [column keys] */
   scroll: {},     /* docKey -> groupBy -> { board, columns } */
@@ -726,6 +743,8 @@ const GLYPH = {
   expand: 'M5 18l6-6-6-6|M13 18l6-6-6-6',        /* chevrons pointing outward */
   bell: 'M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8|M13.7 21a2 2 0 0 1-3.4 0',
   caret: 'm6 9 6 6 6-6',
+  goFull: 'M9 21H3v-6|M21 3h-6v6|M3 21l7-7|M21 3l-7 7',
+  goSide: 'M3 15h6v6|M21 9h-6V3|M10 14l-7 7|M14 10l7-7',
 };
 
 /* ---------- document helpers ---------- */
@@ -791,6 +810,17 @@ function sortTasks(tasks) {
   else if (by === 'id-desc') copy.sort((a, b) => b.id - a.id);
   else if (by === 'subject') copy.sort((a, b) => a.subject.localeCompare(b.subject));
   else if (by === 'type') copy.sort((a, b) => a.task_type.localeCompare(b.task_type) || a.id - b.id);
+  else if (by === 'updated') {
+    /* Timestamps are ISO-8601 UTC, so they order lexicographically. A task that
+       carries no stamp has nothing to claim and sorts last. */
+    copy.sort((a, b) => {
+      const x = valueOf(a, UPDATED), y = valueOf(b, UPDATED);
+      if (x === UNSET && y === UNSET) return a.id - b.id;
+      if (x === UNSET) return 1;
+      if (y === UNSET) return -1;
+      return y.localeCompare(x) || a.id - b.id;
+    });
+  }
   return copy;
 }
 
@@ -938,6 +968,8 @@ function flash(node) {
 
 const cardSignature = t =>
   JSON.stringify([t.task_type, t.subject, t.body, t.properties, prefs.query, prefs.groupBy]);
+/* Content as the file holds it, so a filter change never looks like an edit. */
+let lastContent = new Map(), flashChanged = false;
 
 function fillCard(node, t) {
   node.dataset.sig = cardSignature(t);
@@ -1106,12 +1138,17 @@ function updateColumn(col, key, at, keys, tasks) {
   const have = new Map($$('.card', cards).map(c => [c.dataset.id, c]));
   sortTasks(tasks).forEach((t, i) => {
     const id = String(t.id);
+    const content = taskSignature(t), known = lastContent.get(t.id);
+    const changed = flashChanged && known !== undefined && known !== content;
     let node = have.get(id);
     if (node) {
       have.delete(id);
-      if (node.dataset.sig !== cardSignature(t)) { fillCard(node, t); flash(node); }
+      if (node.dataset.sig !== cardSignature(t)) { fillCard(node, t); if (changed) flash(node); }
     } else {
       node = cardNode(t);
+      /* A status, type or property change moves the card, so its node is new;
+         it should still announce itself. */
+      if (changed) flash(node);
     }
     if (cards.children[i] !== node) cards.insertBefore(node, cards.children[i] || null);
   });
@@ -1167,6 +1204,9 @@ function render() {
     requestAnimationFrame(measureBodies);
   }
 
+  lastContent = new Map(doc.tasks.map(t => [t.id, taskSignature(t)]));
+  flashChanged = false;
+
   const title = documentTitle();
   $('#board-title').textContent = title || 'Frump board';
   document.title = title ? title + ' — Frump board' : 'Frump Board';
@@ -1176,6 +1216,49 @@ function render() {
       : shown + ' of ' + total + ' tasks') + ' · ' + keys.length +
     (keys.length === 1 ? ' column' : ' columns') + ' by ' + prefs.groupBy;
 }
+
+/* ---------- where the task opens: docked beside the board, or over it ---------- */
+const NARROW = '(width <= 62rem)';
+let switchingMode = false;
+/* Below the breakpoint a dock would leave nothing for the board, so the stored
+   preference is honoured only where there is room for it. */
+const effectiveMode = () => (window.matchMedia(NARROW).matches ? 'full' : (prefs.editorMode || 'side'));
+
+function applyEditorMode() {
+  const mode = effectiveMode();
+  modal.dataset.mode = mode;
+  $('.sheet', modal).classList.toggle('stacked', mode === 'side' || window.matchMedia(NARROW).matches);
+  document.body.dataset.editor = modal.open && mode === 'side' ? 'side' : '';
+  const full = mode === 'full', button = $('#editor-mode');
+  button.replaceChildren(icon(full ? GLYPH.goSide : GLYPH.goFull));
+  button.setAttribute('aria-pressed', String(full));
+  button.setAttribute('aria-label', full ? 'Show the task beside the board' : 'Open the task full screen');
+  button.title = button.getAttribute('aria-label');
+  button.disabled = window.matchMedia(NARROW).matches;
+}
+
+function showEditor() {
+  const mode = effectiveMode();
+  if (modal.open) {
+    if (modal.dataset.mode === mode) { applyEditorMode(); return; }
+    /* close() fires its event asynchronously, so the flag is cleared by the
+       handler itself; clearing it here would let the real close logic run and
+       drop the task being edited. */
+    switchingMode = true;
+    modal.close();
+  }
+  /* Docked is deliberately non-modal: the board behind it stays draggable. */
+  mode === 'full' ? modal.showModal() : modal.show();
+  applyEditorMode();
+}
+
+$('#editor-mode').onclick = () => {
+  prefs.editorMode = effectiveMode() === 'full' ? 'side' : 'full';
+  savePrefs();
+  showEditor();
+  form.subject.focus();
+};
+window.matchMedia(NARROW).addEventListener('change', () => { if (modal.open) showEditor(); else applyEditorMode(); });
 
 /* ---------- restoring the view after a reload ---------- */
 /* Everything a reader would call "where I was": the filters and layout already
@@ -1385,7 +1468,24 @@ function showConflict(text, actions) {
 function hideConflict() { $('#conflict').classList.add('hidden'); }
 
 /* Adopt the file's version without asking, keeping the caret where it was. */
+function blink(node) {
+  node.classList.remove('updated-field');
+  void node.offsetWidth;
+  node.classList.add('updated-field');
+  setTimeout(() => node.classList.remove('updated-field'), 1300);
+}
+/* Say which values moved, rather than repainting the whole task silently. */
+function blinkChanges(before) {
+  const after = formSnapshot();
+  for (const [key, node] of [['subject', form.subject], ['task_type', form.task_type],
+                             ['body', form.body], ['status', $('#status')]]) {
+    if (before[key] !== after[key]) blink(node);
+  }
+  if (JSON.stringify(before.properties) !== JSON.stringify(after.properties)) blink($('#properties'));
+}
+
 function rebaseEditor(current) {
+  const before = formSnapshot();
   const field = form.contains(document.activeElement) ? document.activeElement : null;
   const name = field?.id || field?.name || null;
   const caret = field && field.selectionStart !== undefined ? [field.selectionStart, field.selectionEnd] : null;
@@ -1393,6 +1493,7 @@ function rebaseEditor(current) {
   editingBase = taskSignature(current);
   conflictDismissed = null;
   fillEditor(current);
+  blinkChanges(before);
   hideConflict();
   if (name) {
     const again = form.elements[name] || $('#' + CSS.escape(name));
@@ -1438,6 +1539,7 @@ async function load() {
     if (revision !== lastRevision) {
       doc = next; lastRevision = revision;
       docKey = documentTitle() || 'default';
+      flashChanged = true;        /* this render is showing someone else's edit */
       syncPickers(); render();
       checkEditorConflict();
       restoreView();          /* last: a restored draft's notice must not be cleared */
@@ -1785,6 +1887,8 @@ function fillEditor(t) {
   $('#notify-open').disabled = !t;               /* nothing to notify about until it exists */
   baseSnapshot = JSON.stringify(formSnapshot());
   updateDirty();
+  /* A task body grows as a log, so an unedited one shows its latest entry. */
+  requestAnimationFrame(() => { form.body.scrollTop = form.body.scrollHeight; });
 }
 
 
@@ -1798,7 +1902,7 @@ function openEditor(t) {
   fillEditor(t);
   /* showModal supplies the focus trap, inert background, Escape and ::backdrop
      that a div-based modal has to reimplement badly. */
-  if (!modal.open) modal.showModal();
+  showEditor();
   syncRoute();
   applyDraft();          /* work kept from an interrupted session belongs to this task */
   form.subject.focus();
@@ -1815,6 +1919,8 @@ function closeEditor(discard) {
 /* Escape and backdrop dismissal both land on close, so the address bar and the
    stored draft are reset there rather than in every caller. */
 modal.addEventListener('close', () => {
+  if (switchingMode) { switchingMode = false; return; }   /* same task, reopening elsewhere */
+  document.body.dataset.editor = '';
   saveDraft.cancel();          /* a trailing write would undo whichever branch runs below */
   /* Escape, the backdrop and Back are not answers to "throw this away", so the
      work is kept and the user is told where it went. */
@@ -2026,6 +2132,11 @@ $('#reset-layout').onclick = () => {
 };
 
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && modal.open && modal.dataset.mode === 'side' && !notifyDialog.open) {
+    e.preventDefault();
+    closeEditor();              /* same meaning as Escape on the full-screen sheet */
+    return;
+  }
   if (modal.open || e.ctrlKey || e.metaKey || e.altKey) return;
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
   if (e.key === '/' && !typing) { e.preventDefault(); $('#query').focus(); $('#query').select(); }
@@ -2037,6 +2148,7 @@ combobox(form.task_type, () => taskTypes());
 markdownEditor(form.body);
 
 loadPrefs();
+applyEditorMode();
 syncPickers();
 $('#query').value = prefs.query || '';
 $('#clear-query').classList.toggle('hidden', !prefs.query);
