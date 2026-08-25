@@ -104,6 +104,8 @@ impl TaskCollection {
 pub struct FrumpDoc {
     pub header: String,
     pub team: Team,
+    /// Ordered IDs allowed to leave `todo`. Stored as the top-level `## Next` section.
+    pub next: Vec<TaskId>,
     pub tasks: TaskCollection,
 }
 
@@ -113,8 +115,53 @@ impl FrumpDoc {
         FrumpDoc {
             header,
             team,
+            next: Vec::new(),
             tasks,
         }
+    }
+
+    /// Refuse a transition out of `todo` unless this is the first planned task.
+    pub fn ensure_next_transition(
+        &self,
+        id: TaskId,
+        new_status: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let Some(task) = self.tasks.find_by_id(id) else {
+            return Ok(());
+        };
+        if !self.next.is_empty()
+            && task.status() == Some("todo")
+            && new_status != Some("todo")
+            && self.next.first() != Some(&id)
+        {
+            anyhow::bail!(
+                "Task {} is not the next planned task. Only task {} may move out of todo.",
+                id,
+                self.next
+                    .first()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "none".to_string())
+            );
+        }
+        Ok(())
+    }
+
+    /// Keep completed work out of the active plan while preserving all remaining order.
+    pub fn remove_from_next(&mut self, id: TaskId) {
+        self.next.retain(|queued| *queued != id);
+    }
+
+    pub fn validate_next(&self) -> anyhow::Result<()> {
+        let mut seen = std::collections::HashSet::new();
+        for id in &self.next {
+            if !seen.insert(*id) {
+                anyhow::bail!("Next list contains task {} more than once.", id);
+            }
+            if self.tasks.find_by_id(*id).is_none() {
+                anyhow::bail!("Next list references missing task {}.", id);
+            }
+        }
+        Ok(())
     }
 
     /// Apply default assignees to tasks that don't have one
@@ -183,6 +230,31 @@ mod tests {
         let removed = collection.remove(TaskId::new(1).unwrap());
         assert!(removed.is_some());
         assert!(collection.is_empty());
+    }
+
+    #[test]
+    fn next_plan_only_allows_its_front_todo_task_to_move() {
+        let mut first = create_test_task(1, "first");
+        first.set_status("todo".to_string());
+        let mut second = create_test_task(2, "second");
+        second.set_status("todo".to_string());
+        let mut doc = FrumpDoc::new(
+            "# Test\n".to_string(),
+            Team::empty(),
+            TaskCollection::new(vec![first, second]),
+        );
+        assert!(doc
+            .ensure_next_transition(TaskId::new(2).unwrap(), Some("working"))
+            .is_ok());
+        doc.next = vec![TaskId::new(1).unwrap(), TaskId::new(2).unwrap()];
+        assert!(doc
+            .ensure_next_transition(TaskId::new(2).unwrap(), Some("working"))
+            .is_err());
+        assert!(doc
+            .ensure_next_transition(TaskId::new(1).unwrap(), Some("working"))
+            .is_ok());
+        doc.remove_from_next(TaskId::new(1).unwrap());
+        assert_eq!(doc.next, vec![TaskId::new(2).unwrap()]);
     }
 
     #[test]

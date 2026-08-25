@@ -72,25 +72,31 @@ use crate::domain::*;
 pub fn parse(content: &str) -> Result<FrumpDoc> {
     let mut header = String::new();
     let mut team_members = Vec::new();
+    let mut next = Vec::new();
     let mut tasks = Vec::new();
 
     let lines: Vec<&str> = content.lines().collect();
-    let mut i = 0;
-
-    // Parse header (everything before ## Team or ## Tasks)
-    while i < lines.len() {
-        let line = lines[i].trim();
-        if line.to_uppercase().starts_with("## TEAM") || line.to_uppercase().starts_with("## TASKS") {
-            break;
-        }
-        header.push_str(lines[i]);
+    let section = |name: &str| {
+        lines
+            .iter()
+            .position(|line| line.trim().eq_ignore_ascii_case(name))
+    };
+    let team_start = section("## Team");
+    let next_start = section("## Next");
+    let tasks_start = section("## Tasks");
+    let first_section = [team_start, next_start, tasks_start]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(lines.len());
+    for line in &lines[..first_section] {
+        header.push_str(line);
         header.push('\n');
-        i += 1;
     }
 
     // Parse Team section if present
-    if i < lines.len() && lines[i].trim().to_uppercase().starts_with("## TEAM") {
-        i += 1; // Skip the ## Team line
+    if let Some(start) = team_start {
+        let mut i = start + 1;
         while i < lines.len() {
             let line = lines[i].trim();
             if line.starts_with("## ") {
@@ -105,9 +111,28 @@ pub fn parse(content: &str) -> Result<FrumpDoc> {
         }
     }
 
+    if let Some(start) = next_start {
+        let mut i = start + 1;
+        while i < lines.len() && !lines[i].trim().starts_with("## ") {
+            let value = lines[i]
+                .trim()
+                .trim_start_matches("- ")
+                .trim_start_matches("* ")
+                .trim();
+            if !value.is_empty() {
+                next.push(TaskId::new(
+                    value
+                        .parse()
+                        .map_err(|_| anyhow!("Invalid Next task ID: {value}"))?,
+                )?);
+            }
+            i += 1;
+        }
+    }
+
     // Parse Tasks section if present
-    if i < lines.len() && lines[i].trim().to_uppercase().starts_with("## TASKS") {
-        i += 1; // Skip the ## Tasks line
+    if let Some(start) = tasks_start {
+        let mut i = start + 1;
 
         while i < lines.len() {
             let line = lines[i].trim();
@@ -134,7 +159,10 @@ pub fn parse(content: &str) -> Result<FrumpDoc> {
     let team = Team::new(team_members);
     let task_collection = TaskCollection::new(tasks);
 
-    Ok(FrumpDoc::new(header, team, task_collection))
+    let mut doc = FrumpDoc::new(header, team, task_collection);
+    doc.next = next;
+    doc.validate_next()?;
+    Ok(doc)
 }
 
 /// Serialize a Frump document to Markdown format.
@@ -187,10 +215,21 @@ pub fn serialize(doc: &FrumpDoc) -> String {
         output.push('\n');
     }
 
+    if !doc.next.is_empty() {
+        output.push_str("## Next\n\n");
+        for id in &doc.next {
+            output.push_str(&format!("- {}\n", id));
+        }
+        output.push('\n');
+    }
+
     // Write Tasks section
     output.push_str("## Tasks\n\n");
     for task in doc.tasks.tasks() {
-        output.push_str(&format!("### {} {} - {}\n", task.task_type, task.id, task.subject));
+        output.push_str(&format!(
+            "### {} {} - {}\n",
+            task.task_type, task.id, task.subject
+        ));
 
         if !task.body.is_empty() {
             output.push('\n');
@@ -339,6 +378,18 @@ mod tests {
         let task = doc.tasks.tasks().first().unwrap();
         assert_eq!(task.id.value(), 1);
         assert_eq!(task.subject, "test task");
+    }
+
+    #[test]
+    fn next_section_round_trips_before_tasks() {
+        let content = "# Test\n\n## Next\n\n- 2\n- 1\n\n## Tasks\n\n### Task 1 - First\n\nStatus: todo\n\n### Task 2 - Second\n\nStatus: todo\n";
+        let document = parse(content).unwrap();
+        assert_eq!(
+            document.next,
+            vec![TaskId::new(2).unwrap(), TaskId::new(1).unwrap()]
+        );
+        let reparsed = parse(&serialize(&document)).unwrap();
+        assert_eq!(reparsed.next, document.next);
     }
 
     #[test]
@@ -510,7 +561,10 @@ Status: working
 "#;
         let doc = parse(content).unwrap();
         let task = doc.tasks.tasks().first().unwrap();
-        assert_eq!(task.subject, "Test with \"quotes\" and 'apostrophes' & symbols!");
+        assert_eq!(
+            task.subject,
+            "Test with \"quotes\" and 'apostrophes' & symbols!"
+        );
     }
 }
 

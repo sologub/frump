@@ -5,10 +5,11 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use frump::{
-    append_update, export_csv, export_json, import_json, mark_updated, now_utc,
-    validate_property_value, ChangeType, FrumpRepo, PropertyKey, storage, Task, TaskId,
-    TaskTemplate, TaskType, TemplateManager, LAST_UPDATED_PROPERTY,
+    append_update, export_csv, export_json, import_json, mark_updated, now_utc, storage,
+    validate_property_value, ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskTemplate,
+    TaskType, TemplateManager, LAST_UPDATED_PROPERTY,
 };
+use serde::Serialize;
 
 #[derive(Parser)]
 #[command(name = "frump")]
@@ -62,6 +63,43 @@ enum Commands {
         /// Filter by assignee
         #[arg(short = 'a', long)]
         assignee: Option<String>,
+
+        /// Require an exact property key and value, for example `Review=approved`
+        #[arg(long, value_name = "KEY=VALUE")]
+        property: Option<String>,
+
+        /// Require that a property key is absent
+        #[arg(long, value_name = "KEY")]
+        missing: Option<String>,
+
+        /// Sort by id, status, assignee, last-updated, or a property name
+        #[arg(long)]
+        sort: Option<String>,
+
+        /// Reverse the selected sort order
+        #[arg(long, requires = "sort")]
+        desc: bool,
+
+        /// Emit a JSON array of matching tasks
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+
+    /// Replace a single Markdown board with a verified sharded board
+    Migrate {
+        /// Destination directory (defaults to the source filename without .md)
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Show the ordered task IDs allowed to leave todo, or replace the list
+    Next {
+        /// Replace the current ordered list with these task IDs; omit IDs to show it
+        ids: Vec<u32>,
+
+        /// Remove every task from the ordered plan
+        #[arg(long, conflicts_with = "ids")]
+        clear: bool,
     },
 
     /// Show details of a specific task
@@ -311,6 +349,8 @@ async fn main() -> Result<()> {
                 | Commands::Import { .. }
                 | Commands::Bulk { .. }
                 | Commands::ResolveConflicts { .. }
+                | Commands::Migrate { .. }
+                | Commands::Next { .. }
         ) {
         Some(acquire_write_lock(&cli.file)?)
     } else {
@@ -335,6 +375,11 @@ async fn main() -> Result<()> {
             task_type,
             status,
             assignee,
+            property,
+            missing,
+            sort,
+            desc,
+            format,
         } => {
             let doc = read_document(&cli.file)?;
 
@@ -354,6 +399,28 @@ async fn main() -> Result<()> {
                 tasks.retain(|t| t.assignee().map(|name| name == a).unwrap_or(false));
             }
 
+            if let Some(filter) = property {
+                let (key, value) = parse_property_filter(filter)?;
+                tasks.retain(|task| task.get_property(&key) == Some(value.as_str()));
+            }
+            if let Some(key) = missing {
+                let key = PropertyKey::new(key)?;
+                tasks.retain(|task| task.get_property(&key).is_none());
+            }
+            if let Some(key) = sort {
+                sort_tasks(&mut tasks, key, *desc)?;
+            }
+
+            if format == "json" {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &tasks.iter().map(ListTask::from).collect::<Vec<_>>()
+                    )?
+                );
+                return Ok(());
+            }
+
             if tasks.is_empty() {
                 println!("No tasks found.");
             } else {
@@ -366,6 +433,48 @@ async fn main() -> Result<()> {
                         println!("  Assigned to: {}", assignee);
                     }
                 }
+            }
+        }
+
+        Commands::Migrate { output } => {
+            let destination = output
+                .clone()
+                .unwrap_or_else(|| default_migration_destination(&cli.file));
+            storage::migrate_single_file(&cli.file, &destination)?;
+            println!(
+                "Migrated {} to {}. The source file has been replaced.",
+                cli.file.display(),
+                destination.display()
+            );
+        }
+
+        Commands::Next { ids, clear } => {
+            let mut doc = read_document(&cli.file)?;
+            if *clear {
+                doc.next.clear();
+                storage::write(&cli.file, &doc)?;
+                println!("Cleared next tasks.");
+            } else if ids.is_empty() {
+                if doc.next.is_empty() {
+                    println!("No next tasks planned.");
+                } else {
+                    for id in &doc.next {
+                        println!("{}", id);
+                    }
+                }
+            } else {
+                let next: Result<Vec<_>, _> = ids.iter().map(|id| TaskId::new(*id)).collect();
+                doc.next = next?;
+                doc.validate_next()?;
+                storage::write(&cli.file, &doc)?;
+                println!(
+                    "Set next tasks: {}",
+                    doc.next
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
             }
         }
 
@@ -480,6 +589,7 @@ async fn main() -> Result<()> {
                 }
                 ensure_close_ready(&doc, task_id)?;
                 let task = doc.tasks.remove(task_id).expect("task checked above");
+                doc.remove_from_next(task_id);
                 storage::write(&cli.file, &doc)?;
 
                 println!("Closed {} {} - {}", task.task_type, task.id, task.subject);
@@ -526,18 +636,21 @@ async fn main() -> Result<()> {
 
             if property == "Status" {
                 warn_if_new_status(&doc, value);
+                doc.ensure_next_transition(task_id, Some(value))?;
             }
 
+            let completed = property == "Status" && value == "done";
             if let Some(task) = doc.tasks.find_by_id_mut(task_id) {
                 task.set_property(prop_key, value.clone());
                 touch_task(task);
-
-                storage::write(&cli.file, &doc)?;
-
-                println!("Set {} = {} on task {}", property, value, id);
             } else {
                 anyhow::bail!("Task {} not found.", id);
             }
+            if completed {
+                doc.remove_from_next(task_id);
+            }
+            storage::write(&cli.file, &doc)?;
+            println!("Set {} = {} on task {}", property, value, id);
         }
 
         Commands::Unset { id, property } => {
@@ -549,9 +662,13 @@ async fn main() -> Result<()> {
                     LAST_UPDATED_PROPERTY
                 );
             }
+            let task_id = TaskId::new(*id)?;
+            if property == "Status" {
+                doc.ensure_next_transition(task_id, None)?;
+            }
             let task = doc
                 .tasks
-                .find_by_id_mut(TaskId::new(*id)?)
+                .find_by_id_mut(task_id)
                 .ok_or_else(|| anyhow::anyhow!("Task {} not found.", id))?;
             if task.get_property(&key).is_none() {
                 anyhow::bail!("Task {} has no {} property.", id, property);
@@ -1053,6 +1170,7 @@ async fn main() -> Result<()> {
                     let count = tasks_to_close.len();
                     for id in tasks_to_close {
                         doc.tasks.remove(id);
+                        doc.remove_from_next(id);
                     }
 
                     storage::write(&cli.file, &doc)?;
@@ -1102,6 +1220,18 @@ async fn main() -> Result<()> {
                             LAST_UPDATED_PROPERTY
                         );
                     }
+                    let targets: Vec<_> = doc
+                        .tasks
+                        .tasks()
+                        .iter()
+                        .filter(|task| task.status() == Some(status.as_str()))
+                        .map(|task| task.id)
+                        .collect();
+                    if property == "Status" {
+                        for id in &targets {
+                            doc.ensure_next_transition(*id, Some(value))?;
+                        }
+                    }
                     let mut count = 0;
 
                     for task in doc.tasks.tasks_mut() {
@@ -1109,6 +1239,12 @@ async fn main() -> Result<()> {
                             task.set_property(prop_key.clone(), value.clone());
                             touch_task(task);
                             count += 1;
+                        }
+                    }
+
+                    if property == "Status" && value == "done" {
+                        for id in targets {
+                            doc.remove_from_next(id);
                         }
                     }
 
@@ -1257,7 +1393,9 @@ async fn main() -> Result<()> {
 fn ensure_close_is_recoverable(file: &Path, task_id: TaskId) -> Result<()> {
     let tracked_file = if storage::is_sharded(file) {
         file.join("tasks").join(format!("{}.md", task_id.value()))
-    } else { file.to_path_buf() };
+    } else {
+        file.to_path_buf()
+    };
     let root_output = std::process::Command::new("git")
         .current_dir(tracked_file.parent().unwrap_or_else(|| Path::new(".")))
         .args(["rev-parse", "--show-toplevel"])
@@ -1415,6 +1553,82 @@ fn read_document(file: &Path) -> Result<frump::FrumpDoc> {
     storage::read(file).with_context(|| format!("Failed to read {}", file.display()))
 }
 
+#[derive(Serialize)]
+struct ListTask {
+    id: u32,
+    task_type: String,
+    subject: String,
+    body: String,
+    properties: std::collections::BTreeMap<String, String>,
+}
+
+impl From<&Task> for ListTask {
+    fn from(task: &Task) -> Self {
+        Self {
+            id: task.id.value(),
+            task_type: task.task_type.as_str().to_string(),
+            subject: task.subject.clone(),
+            body: task.body.clone(),
+            properties: task
+                .properties
+                .iter()
+                .map(|property| (property.key.as_str().to_string(), property.value.clone()))
+                .collect(),
+        }
+    }
+}
+
+fn parse_property_filter(filter: &str) -> Result<(PropertyKey, String)> {
+    let (key, value) = filter
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("--property must use KEY=VALUE"))?;
+    Ok((PropertyKey::new(key)?, value.to_string()))
+}
+
+fn sort_tasks(tasks: &mut [Task], key: &str, descending: bool) -> Result<()> {
+    enum SortKey {
+        Id,
+        Property(PropertyKey),
+    }
+    let key = match key {
+        "id" => SortKey::Id,
+        "status" => SortKey::Property(PropertyKey::status()),
+        "assignee" => SortKey::Property(PropertyKey::assigned_to()),
+        "last-updated" => SortKey::Property(PropertyKey::new(LAST_UPDATED_PROPERTY)?),
+        property => SortKey::Property(PropertyKey::new(property)?),
+    };
+    tasks.sort_by(|left, right| match &key {
+        SortKey::Id => {
+            let order = left.id.cmp(&right.id);
+            if descending {
+                order.reverse()
+            } else {
+                order
+            }
+        }
+        SortKey::Property(property) => {
+            match (left.get_property(property), right.get_property(property)) {
+                (Some(a), Some(b)) => {
+                    let order = a.cmp(b).then_with(|| left.id.cmp(&right.id));
+                    if descending {
+                        order.reverse()
+                    } else {
+                        order
+                    }
+                }
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => left.id.cmp(&right.id),
+            }
+        }
+    });
+    Ok(())
+}
+
+fn default_migration_destination(source: &Path) -> PathBuf {
+    source.with_extension("")
+}
+
 fn dependency_ids(task: &Task) -> Vec<TaskId> {
     task.get_property(&PropertyKey::new("Depends On").expect("constant is valid"))
         .map(|value| {
@@ -1568,7 +1782,11 @@ fn all_query_tokens_match(query: &str, subject: &str, body: &str) -> bool {
 
 fn acquire_write_lock(file: &Path) -> Result<std::fs::File> {
     use fs2::FileExt;
-    let lock_path = if file.is_dir() { file.join(".frump.lock") } else { file.to_path_buf() };
+    let lock_path = if file.is_dir() {
+        file.join(".frump.lock")
+    } else {
+        file.to_path_buf()
+    };
     let lock = OpenOptions::new()
         .read(true)
         .write(true)

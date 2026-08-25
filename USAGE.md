@@ -25,9 +25,9 @@ cargo build --release
 
 Frump automatically finds `frump.md` in the current directory or a parent directory. Use `--file` only to select a different board.
 
-## Experimental sharded board layout
+## Sharded board layout and migration
 
-Frump can also read and write a board that has already been laid out as individual task files. This is intentionally not a migration command yet: create and test the layout manually before adopting it.
+Frump can store each task in its own Markdown file. Convert a single-file board with `frump migrate`; a successful migration replaces `frump.md` with the `frump/` directory. The command stages and verifies the new board before publishing it, and refuses an existing destination.
 
 ```text
 frump/
@@ -38,6 +38,11 @@ frump/
 ```
 
 `general.md` contains the project header and Team section. Each task file contains exactly one normal task heading, body, and properties. When invoked with `--file frump`, Frump writes only changed task files rather than rewriting the full board. Existing `frump.md` boards retain their current behavior.
+
+```bash
+frump --file frump.md migrate
+frump --file frump list
+```
 
 ## Web board
 
@@ -170,6 +175,14 @@ frump list -a "Jane Smith"
 
 # Combine filters
 frump list -t Bug -s open -a "Jane Smith"
+
+# Filter authority metadata, find missing values, and sort
+frump list --property "Evidence Kind=test" --missing Review
+frump list --sort last-updated --desc
+frump list --sort "Depends On"
+
+# Machine-readable filtered results
+frump list --status todo --format json
 ```
 
 **Example output:**
@@ -317,6 +330,18 @@ frump update <task_id> \
 
 # Append dated evidence without replacing the existing body
 frump update <task_id> --append-body "Validation passed after rebuild"
+```
+
+### next - Manage the ordered todo plan
+
+`## Next` stores the ordered IDs permitted to leave `todo`. With IDs, `next` replaces the plan; with no IDs, it prints the current order; `--clear` removes the whole plan. An empty plan preserves the existing unrestricted workflow; once populated, a `todo` task that is not first cannot move to another status. Moving a task to `done` automatically removes it from the plan.
+
+```bash
+frump next 12 15 18
+frump next
+frump next --clear
+frump set 12 Status working
+frump set 12 Status done
 ```
 
 `--body` replaces the body exactly. `--append-body` creates a dated Markdown update and adds the current Metateam crew member when that identity is available.

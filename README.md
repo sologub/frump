@@ -83,13 +83,13 @@ The board edits `frump.md` directly and refreshes when the file changes external
 
 ### Authority workflow
 
-Frump supports `Depends On: 1, 2` task properties, validates active dependency graphs, and provides `deps`, `dependents`, and `ready` queries. Use `update --append-body` to preserve review and validation evidence in the durable task record; it adds a UTC timestamp and, when available, the Metateam crew member. `Last Updated` is maintained automatically for every created or changed task. Properties are compact metadata limited to 40 bytes; place longer evidence in the body. Use `unset` to remove stale properties. `close` requires a `done` task whose active prerequisites are also done.
+Frump supports `Depends On: 1, 2` task properties, validates active dependency graphs, and provides `deps`, `dependents`, and `ready` queries. Use `update --append-body` to preserve review and validation evidence in the durable task record; it adds a UTC timestamp and, when available, the Metateam crew member. `Last Updated` is maintained automatically for every created or changed task. Properties are compact metadata limited to 40 bytes; place longer evidence in the body. Use `unset` to remove stale properties. `close` requires a `done` task whose active prerequisites are also done. Use `frump next 12 15` to activate an ordered todo plan: only its front task may leave `todo`, and a completed task is removed automatically. `frump list --property "Review=approved" --missing Evidence --sort last-updated --desc --format json` provides filtered machine-readable task data.
 
 Use `frump commit -m "short message"` to stage and commit only the task file; it never pushes.
 
-### Experimental sharded storage
+### Sharded storage
 
-For manual evaluation, Frump can read and write an already-created `frump/` directory containing `general.md` and one Markdown file per task in `frump/tasks/`. Invoke it with `--file frump`. This is not a migration path yet; existing `frump.md` remains the default and fully supported format.
+`frump migrate` converts `frump.md` into `frump/`, containing `general.md` and one Markdown file per task in `frump/tasks/`. It stages and verifies the complete destination before replacing the source file, refuses an existing destination, and leaves one active board. Invoke the migrated board with `--file frump`.
 
 Columns are built from a property you choose: `Status` by default, or any other
 property in the file, such as `Assigned To`. Drag a card between columns to

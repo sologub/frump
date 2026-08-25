@@ -135,6 +135,12 @@ async fn update_task(
     let _lock = acquire_write_lock(&state.file)?;
     let mut doc = read_parsed_document(&state.file)?;
     let task_id = TaskId::new(id)?;
+    let new_status = input
+        .properties
+        .iter()
+        .find(|property| property.key == "Status")
+        .map(|property| property.value.clone());
+    doc.ensure_next_transition(task_id, new_status.as_deref())?;
     let task = doc
         .tasks
         .find_by_id_mut(task_id)
@@ -144,6 +150,10 @@ async fn update_task(
     mark_updated(&mut replacement, &now_utc());
     *task = replacement;
     let response = task_to_dto(task);
+    let completed = new_status.as_deref() == Some("done");
+    if completed {
+        doc.remove_from_next(task_id);
+    }
     write_document(&state.file, &doc)?;
     Ok(Json(response))
 }
@@ -209,12 +219,21 @@ fn read_parsed_document(file: &PathBuf) -> Result<FrumpDoc> {
 }
 
 fn write_document(file: &PathBuf, doc: &FrumpDoc) -> Result<()> {
-    storage::write(file, doc).with_context(|| format!("Failed to write task board {}", file.display()))
+    storage::write(file, doc)
+        .with_context(|| format!("Failed to write task board {}", file.display()))
 }
 
 fn acquire_write_lock(file: &PathBuf) -> Result<fs::File> {
-    let lock_path = if file.is_dir() { file.join(".frump.lock") } else { file.clone() };
-    let lock = fs::OpenOptions::new().read(true).write(true).create(file.is_dir()).open(lock_path)?;
+    let lock_path = if file.is_dir() {
+        file.join(".frump.lock")
+    } else {
+        file.clone()
+    };
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(file.is_dir())
+        .open(lock_path)?;
     lock.lock_exclusive()?;
     Ok(lock)
 }
