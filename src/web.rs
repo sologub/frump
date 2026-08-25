@@ -385,4 +385,26 @@ mod tests {
         assert!(error.contains("Review"));
         assert!(error.contains("task body"));
     }
+
+    #[test]
+    fn web_document_preserves_colon_ended_report_headings() {
+        let path = std::env::temp_dir().join(format!(
+            "frump-web-body-{}-{}.md",
+            std::process::id(),
+            crate::now_utc().replace(':', "-")
+        ));
+        fs::write(
+            &path,
+            "# Project\n\n## Tasks\n\n### Investigation 114 - Preserve report\n\nFraming.\n\nINVESTIGATION REPORT: first finding.\n\nCONTRACT 2: second finding.\n\nStatus: investigations\nAssigned To: Ada\n",
+        )
+        .unwrap();
+
+        let document = read_document(&path).unwrap();
+        let task = &document.tasks[0];
+        assert!(task.body.contains("INVESTIGATION REPORT: first finding."));
+        assert!(task.body.contains("CONTRACT 2: second finding."));
+        assert_eq!(task.properties.len(), 2);
+
+        fs::remove_file(path).unwrap();
+    }
 }

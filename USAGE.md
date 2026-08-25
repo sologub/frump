@@ -66,7 +66,7 @@ frump set 12 "Depends On" "3, 7"
 frump validate                 # rejects unknown and cyclic active dependencies
 frump deps 12                  # show the prerequisite tree
 frump dependents 7             # show active consumers of task 7
-frump ready                    # show tasks with no active prerequisites
+frump ready                    # show unfinished tasks with no active prerequisites
 
 # Append durable task evidence without overwriting the existing body
 frump update 12 --append-body "Review rejected: reason and next proof"

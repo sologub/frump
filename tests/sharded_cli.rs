@@ -194,6 +194,45 @@ fn migrate_replaces_the_source_with_a_verified_sharded_board() {
 }
 
 #[test]
+fn commit_after_migration_stages_the_removed_single_file() {
+    let root = unique_root("migrate-commit");
+    let source = single_file_board(&root);
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "Frump Test"],
+        vec!["config", "user.email", "frump-test@example.invalid"],
+        vec!["add", "frump.md"],
+        vec!["commit", "-qm", "Initial board"],
+    ] {
+        assert!(Command::new("git").current_dir(&root).args(args).status().unwrap().success());
+    }
+    let binary = env!("CARGO_BIN_EXE_frump");
+    let migrated = Command::new(binary)
+        .args(["--file", source.to_str().unwrap(), "migrate"])
+        .output()
+        .unwrap();
+    assert!(migrated.status.success(), "{}", String::from_utf8_lossy(&migrated.stderr));
+
+    let board = root.join("frump");
+    let committed = Command::new(binary)
+        .current_dir(&root)
+        .args(["--file", board.to_str().unwrap(), "commit", "-m", "Migrate board"])
+        .output()
+        .unwrap();
+    assert!(committed.status.success(), "{}", String::from_utf8_lossy(&committed.stderr));
+    let files = Command::new("git")
+        .current_dir(&root)
+        .args(["show", "--name-status", "--format=", "HEAD"])
+        .output()
+        .unwrap();
+    let files = String::from_utf8(files.stdout).unwrap();
+    assert!(files.contains("D\tfrump.md"));
+    assert!(files.contains("A\tfrump/general.md"));
+    assert!(files.contains("A\tfrump/tasks/1.md"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn migrate_refuses_an_existing_destination_without_touching_the_source() {
     let root = unique_root("migrate-refusal");
     let source = single_file_board(&root);
@@ -236,6 +275,32 @@ fn list_filters_sorts_and_emits_machine_readable_tasks() {
     );
     let tasks: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(tasks.as_array().unwrap()[0]["id"], 1);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn ready_omits_completed_tasks_and_keeps_unblocked_work() {
+    let root = unique_root("ready");
+    let board = root.join("frump.md");
+    fs::write(
+        &board,
+        "# Check\n\n## Tasks\n\n### Task 1 - Completed\n\nStatus: done\n\n### Bug 2 - Ready\n\nStatus: todo\n\n### Task 3 - Blocked\n\nStatus: todo\nDepends On: 2\n",
+    )
+    .unwrap();
+
+    let ready = Command::new(env!("CARGO_BIN_EXE_frump"))
+        .args(["--file", board.to_str().unwrap(), "ready"])
+        .output()
+        .unwrap();
+    assert!(
+        ready.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ready.stderr)
+    );
+    let output = String::from_utf8(ready.stdout).unwrap();
+    assert!(output.contains("Bug 2 - Ready"));
+    assert!(!output.contains("Task 1 - Completed"));
+    assert!(!output.contains("Task 3 - Blocked"));
     let _ = fs::remove_dir_all(root);
 }
 

@@ -1046,12 +1046,13 @@ async fn main() -> Result<()> {
         Commands::Ready => {
             let doc = read_document(&cli.file)?;
             for task in doc.tasks.tasks().iter().filter(|task| {
-                dependency_ids(task).iter().all(|dependency| {
-                    doc.tasks
-                        .find_by_id(*dependency)
-                        .map(|prerequisite| prerequisite.status() == Some("done"))
-                        .unwrap_or(true)
-                })
+                task.status() != Some("done")
+                    && dependency_ids(task).iter().all(|dependency| {
+                        doc.tasks
+                            .find_by_id(*dependency)
+                            .map(|prerequisite| prerequisite.status() == Some("done"))
+                            .unwrap_or(true)
+                    })
             }) {
                 println!("{} {} - {}", task.task_type, task.id, task.subject);
             }
@@ -1507,19 +1508,36 @@ fn discover_task_file() -> Result<PathBuf> {
 }
 
 fn commit_task_file(file: &Path, message: &str) -> Result<()> {
-    let (directory, paths): (PathBuf, Vec<&str>) = if let Some(root) = storage::sharded_root(file) {
-        (root, vec!["general.md", "tasks"])
+    let (directory, paths): (PathBuf, Vec<String>) = if let Some(root) = storage::sharded_root(file) {
+        let parent = root.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("Sharded board path has no directory name"))?;
+        let legacy_source = format!("{name}.md");
+        let tracked_legacy_source = std::process::Command::new("git")
+            .current_dir(&parent)
+            .args(["ls-files", "--error-unmatch", "--", &legacy_source])
+            .output()
+            .context("Failed to inspect the legacy board path")?
+            .status
+            .success();
+        let mut paths = vec![name.to_string()];
+        if tracked_legacy_source {
+            paths.push(legacy_source);
+        }
+        (parent, paths)
     } else {
         let parent = file.parent().unwrap_or_else(|| Path::new("."));
         let name = file
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| anyhow::anyhow!("Task file path has no filename"))?;
-        (parent.to_path_buf(), vec![name])
+        (parent.to_path_buf(), vec![name.to_string()])
     };
     let add = std::process::Command::new("git")
         .current_dir(&directory)
-        .args(["add", "--"])
+        .args(["add", "-A", "--"])
         .args(&paths)
         .status()
         .context("Failed to stage task file")?;
