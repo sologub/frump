@@ -39,6 +39,7 @@
 pub mod domain;
 pub mod export;
 pub mod git;
+pub mod notifications;
 pub mod parser;
 pub mod storage;
 pub mod templates;
@@ -52,5 +53,6 @@ pub use domain::{
 };
 pub use export::{export_csv, export_json, import_json};
 pub use git::{ChangeType, FrumpRepo, TaskCommit, TaskHistory};
+pub use notifications::{announce_assignment, assignment_announcement};
 pub use templates::{TaskTemplate, TemplateManager};
 pub use updates::{append_update, mark_updated, now_utc, LAST_UPDATED_PROPERTY};

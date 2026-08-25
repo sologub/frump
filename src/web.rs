@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use crate::{
-    mark_updated, now_utc, storage, validate_property_value, FrumpDoc, FrumpRepo, PropertyKey,
-    Task, TaskId, TaskType,
+    announce_assignment, mark_updated, now_utc, storage, validate_property_value, FrumpDoc,
+    FrumpRepo, PropertyKey, Task, TaskId, TaskType,
 };
 
 #[derive(Clone)]
@@ -121,9 +121,14 @@ async fn create_task(
     validate_new_property_values(&input.properties)?;
     let mut task = task_from_input(id, input)?;
     mark_updated(&mut task, &now_utc());
+    let assignment = task.assignee().map(str::to_string);
     let response = task_to_dto(&task);
     doc.tasks.add(task);
     write_document(&state.file, &doc)?;
+    if let Some(assignee) = assignment {
+        let task = doc.tasks.find_by_id(id).expect("task was added");
+        announce_assignment(task, &assignee)?;
+    }
     Ok(Json(response))
 }
 
@@ -148,6 +153,8 @@ async fn update_task(
     validate_changed_property_values(task, &input.properties)?;
     let mut replacement = task_from_input(task_id, input)?;
     mark_updated(&mut replacement, &now_utc());
+    let assignment_changed = task.assignee() != replacement.assignee();
+    let assignment = replacement.assignee().map(str::to_string);
     *task = replacement;
     let response = task_to_dto(task);
     let completed = new_status.as_deref() == Some("done");
@@ -155,6 +162,15 @@ async fn update_task(
         doc.remove_from_next(task_id);
     }
     write_document(&state.file, &doc)?;
+    if assignment_changed {
+        if let Some(assignee) = assignment {
+            let task = doc
+                .tasks
+                .find_by_id(task_id)
+                .expect("task exists after update");
+            announce_assignment(task, &assignee)?;
+        }
+    }
     Ok(Json(response))
 }
 

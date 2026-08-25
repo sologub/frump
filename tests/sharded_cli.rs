@@ -204,22 +204,41 @@ fn commit_after_migration_stages_the_removed_single_file() {
         vec!["add", "frump.md"],
         vec!["commit", "-qm", "Initial board"],
     ] {
-        assert!(Command::new("git").current_dir(&root).args(args).status().unwrap().success());
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
     }
     let binary = env!("CARGO_BIN_EXE_frump");
     let migrated = Command::new(binary)
         .args(["--file", source.to_str().unwrap(), "migrate"])
         .output()
         .unwrap();
-    assert!(migrated.status.success(), "{}", String::from_utf8_lossy(&migrated.stderr));
+    assert!(
+        migrated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&migrated.stderr)
+    );
 
     let board = root.join("frump");
     let committed = Command::new(binary)
         .current_dir(&root)
-        .args(["--file", board.to_str().unwrap(), "commit", "-m", "Migrate board"])
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "commit",
+            "-m",
+            "Migrate board",
+        ])
         .output()
         .unwrap();
-    assert!(committed.status.success(), "{}", String::from_utf8_lossy(&committed.stderr));
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
     let files = Command::new("git")
         .current_dir(&root)
         .args(["show", "--name-status", "--format=", "HEAD"])
@@ -387,6 +406,7 @@ fn body_replacement_stays_a_replacement_and_appends_after_the_complete_body() {
             "{}",
             String::from_utf8_lossy(&update.stderr)
         );
+        assert!(String::from_utf8_lossy(&update.stdout).contains("Replaced body for task 4"));
     }
     let replaced = fs::read_to_string(&board).unwrap();
     assert!(!replaced.contains("First replacement"));
@@ -570,5 +590,129 @@ fn append_body_msg_saves_the_update_and_broadcasts_the_raw_fragment() {
     assert!(fs::read_to_string(board)
         .unwrap()
         .contains("Evidence accepted"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn assignment_changes_are_announced_after_the_board_is_written() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = unique_root("assignment-message");
+    let board = root.join("frump.md");
+    fs::write(&board, "# Check\n\n## Tasks\n").unwrap();
+    let tools = root.join("tools");
+    fs::create_dir(&tools).unwrap();
+    let metateam = tools.join("metateam");
+    fs::write(
+        &metateam,
+        "#!/bin/sh\n/usr/bin/grep -q '^Assigned To: ' \"$FRUMP_BOARD\" || exit 23\nprintf '%s\\n' \"$@\" >> \"$FRUMP_MESSAGE_ARGS\"\nprintf '\\n' >> \"$FRUMP_MESSAGE_ARGS\"\nprintf 'delivered by test\\n'\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&metateam).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&metateam, permissions).unwrap();
+    let arguments = root.join("assignment-arguments");
+    let binary = env!("CARGO_BIN_EXE_frump");
+
+    let added = Command::new(binary)
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "add",
+            "Fixture",
+            "--assignee",
+            "Ada",
+        ])
+        .env("PATH", &tools)
+        .env("FRUMP_MESSAGE_ARGS", &arguments)
+        .env("FRUMP_BOARD", &board)
+        .output()
+        .unwrap();
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let added_output = String::from_utf8(added.stdout).unwrap();
+    let id = added_output
+        .lines()
+        .find(|line| line.starts_with("Added "))
+        .unwrap()
+        .split_whitespace()
+        .nth(2)
+        .unwrap()
+        .to_string();
+
+    for args in [
+        vec![
+            "--file",
+            board.to_str().unwrap(),
+            "update",
+            &id,
+            "--body",
+            "replacement",
+        ],
+        vec!["--file", board.to_str().unwrap(), "assign", &id, "Ada"],
+        vec!["--file", board.to_str().unwrap(), "assign", &id, "Bob"],
+        vec![
+            "--file",
+            board.to_str().unwrap(),
+            "set",
+            &id,
+            "Assigned To",
+            "Carol",
+        ],
+    ] {
+        let output = Command::new(binary)
+            .args(args)
+            .env("PATH", &tools)
+            .env("FRUMP_MESSAGE_ARGS", &arguments)
+            .env("FRUMP_BOARD", &board)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let messages = fs::read_to_string(arguments).unwrap();
+    let invocations: Vec<Vec<_>> = messages
+        .trim_end()
+        .split("\n\n")
+        .map(|invocation| invocation.lines().collect())
+        .collect();
+    assert_eq!(invocations.len(), 3);
+    let first_body = format!("Task {id} is assigned to Ada.");
+    assert_eq!(
+        invocations[0],
+        vec![
+            "crew",
+            "message",
+            "--from",
+            "frump",
+            "all",
+            first_body.as_str()
+        ]
+    );
+    assert_eq!(invocations[1][5], format!("Task {id} is assigned to Bob."));
+    assert_eq!(
+        invocations[2][5],
+        format!("Task {id} is assigned to Carol.")
+    );
+    assert!(!messages.contains("replacement"));
+    assert_eq!(
+        Command::new(binary)
+            .args(["--file", board.to_str().unwrap(), "show", &id])
+            .output()
+            .unwrap()
+            .stdout
+            .windows("replacement".len())
+            .filter(|window| *window == b"replacement")
+            .count(),
+        1
+    );
     let _ = fs::remove_dir_all(root);
 }

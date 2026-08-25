@@ -251,6 +251,8 @@ frump add -t Feature "Add export feature" \
 - Checks git history to avoid ID conflicts
 - Assigns to the first team member if no assignee is specified
 
+Whenever a task receives a new `Assigned To` value, Frump saves the board first and then announces `<type> <id> is assigned to <assignee>.` to all Metateam crew members as `frump`.
+
 ## Task Management
 
 ### close - Close a task

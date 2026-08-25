@@ -5,9 +5,9 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use frump::{
-    append_update, export_csv, export_json, import_json, mark_updated, now_utc, storage,
-    validate_property_value, ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskTemplate,
-    TaskType, TemplateManager, LAST_UPDATED_PROPERTY,
+    announce_assignment, append_update, export_csv, export_json, import_json, mark_updated,
+    now_utc, storage, validate_property_value, ChangeType, FrumpRepo, PropertyKey, Task, TaskId,
+    TaskTemplate, TaskType, TemplateManager, LAST_UPDATED_PROPERTY,
 };
 use serde::Serialize;
 
@@ -178,7 +178,7 @@ enum Commands {
         #[arg(long)]
         subject: Option<String>,
 
-        /// New body (optional)
+        /// Replacement body (optional)
         #[arg(long, conflicts_with = "clear_body")]
         body: Option<String>,
 
@@ -577,10 +577,17 @@ async fn main() -> Result<()> {
             }
             touch_task(&mut new_task);
 
+            let assignment = new_task.assignee().map(str::to_string);
+            let assignment_task = new_task.clone();
+
             doc.tasks.add(new_task);
 
             // Write back to file
             storage::write(&cli.file, &doc)?;
+
+            if let Some(assignee) = assignment {
+                print_assignment_announcement(&assignment_task, &assignee)?;
+            }
 
             println!("Added {} {} - {}", task_type, next_id, subject);
         }
@@ -613,10 +620,16 @@ async fn main() -> Result<()> {
 
             let task_id = TaskId::new(*id)?;
             if let Some(task) = doc.tasks.find_by_id_mut(task_id) {
+                let changed = task.assignee() != Some(assignee.as_str());
                 task.set_assignee(assignee.clone());
                 touch_task(task);
+                let assigned_task = changed.then(|| task.clone());
 
                 storage::write(&cli.file, &doc)?;
+
+                if let Some(task) = assigned_task {
+                    print_assignment_announcement(&task, assignee)?;
+                }
 
                 println!("Assigned task {} to {}", id, assignee);
             } else {
@@ -648,9 +661,15 @@ async fn main() -> Result<()> {
             }
 
             let completed = property == "Status" && value == "done";
+            let mut assigned_task = None;
             if let Some(task) = doc.tasks.find_by_id_mut(task_id) {
+                let assignment_changed =
+                    property == "Assigned To" && task.assignee() != Some(value.as_str());
                 task.set_property(prop_key, value.clone());
                 touch_task(task);
+                if assignment_changed {
+                    assigned_task = Some(task.clone());
+                }
             } else {
                 anyhow::bail!("Task {} not found.", id);
             }
@@ -658,6 +677,9 @@ async fn main() -> Result<()> {
                 doc.remove_from_next(task_id);
             }
             storage::write(&cli.file, &doc)?;
+            if let Some(task) = assigned_task {
+                print_assignment_announcement(&task, value)?;
+            }
             println!("Set {} = {} on task {}", property, value, id);
         }
 
@@ -773,7 +795,7 @@ async fn main() -> Result<()> {
                 }
                 if let Some(new_body) = body {
                     task.set_body(new_body.clone());
-                    println!("Updated body for task {}", id);
+                    println!("Replaced body for task {}", id);
                 }
                 if *clear_body {
                     task.set_body(String::new());
@@ -1099,6 +1121,7 @@ async fn main() -> Result<()> {
 
                 // Add imported tasks with new IDs
                 let mut added = 0;
+                let mut announcements = Vec::new();
                 for task in imported_doc.tasks.tasks() {
                     let new_id = TaskId::new(next_id)?;
                     let mut new_task =
@@ -1111,17 +1134,29 @@ async fn main() -> Result<()> {
                     }
                     touch_task(&mut new_task);
 
+                    if let Some(assignee) = new_task.assignee().map(str::to_string) {
+                        announcements.push((new_task.clone(), assignee));
+                    }
+
                     current_doc.tasks.add(new_task);
                     next_id += 1;
                     added += 1;
                 }
 
                 storage::write(&cli.file, &current_doc)?;
+                for (task, assignee) in announcements {
+                    print_assignment_announcement(&task, &assignee)?;
+                }
 
                 println!("Merged {} tasks into frump.md", added);
             } else {
                 // Replace: overwrite with imported document
                 storage::write(&cli.file, &imported_doc)?;
+                for task in imported_doc.tasks.tasks() {
+                    if let Some(assignee) = task.assignee() {
+                        print_assignment_announcement(task, assignee)?;
+                    }
+                }
 
                 println!(
                     "Imported {} tasks, {} team members",
@@ -1230,11 +1265,16 @@ async fn main() -> Result<()> {
                     validate_property_value(assignee)?;
                     let filter_type = TaskType::parse(task_type);
                     let mut count = 0;
+                    let mut announcements = Vec::new();
 
                     for task in doc.tasks.tasks_mut() {
                         if task.task_type == filter_type {
+                            let changed = task.assignee() != Some(assignee.as_str());
                             task.set_assignee(assignee.clone());
                             touch_task(task);
+                            if changed {
+                                announcements.push(task.clone());
+                            }
                             count += 1;
                         }
                     }
@@ -1245,6 +1285,9 @@ async fn main() -> Result<()> {
                     }
 
                     storage::write(&cli.file, &doc)?;
+                    for task in announcements {
+                        print_assignment_announcement(&task, assignee)?;
+                    }
 
                     println!(
                         "Assigned {} task(s) of type '{}' to {}",
@@ -1278,11 +1321,17 @@ async fn main() -> Result<()> {
                         }
                     }
                     let mut count = 0;
+                    let mut announcements = Vec::new();
 
                     for task in doc.tasks.tasks_mut() {
                         if task.status().map(|s| s == status).unwrap_or(false) {
+                            let assignment_changed = property == "Assigned To"
+                                && task.assignee() != Some(value.as_str());
                             task.set_property(prop_key.clone(), value.clone());
                             touch_task(task);
+                            if assignment_changed {
+                                announcements.push(task.clone());
+                            }
                             count += 1;
                         }
                     }
@@ -1299,6 +1348,9 @@ async fn main() -> Result<()> {
                     }
 
                     storage::write(&cli.file, &doc)?;
+                    for task in announcements {
+                        print_assignment_announcement(&task, value)?;
+                    }
 
                     println!(
                         "Set {} = {} on {} task(s) with status '{}'",
@@ -1508,8 +1560,12 @@ fn discover_task_file() -> Result<PathBuf> {
 }
 
 fn commit_task_file(file: &Path, message: &str) -> Result<()> {
-    let (directory, paths): (PathBuf, Vec<String>) = if let Some(root) = storage::sharded_root(file) {
-        let parent = root.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+    let (directory, paths): (PathBuf, Vec<String>) = if let Some(root) = storage::sharded_root(file)
+    {
+        let parent = root
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
         let name = root
             .file_name()
             .and_then(|name| name.to_str())
@@ -1553,6 +1609,12 @@ fn commit_task_file(file: &Path, message: &str) -> Result<()> {
     if !commit.success() {
         anyhow::bail!("Git could not create a commit for {}", file.display());
     }
+    Ok(())
+}
+
+fn print_assignment_announcement(task: &Task, assignee: &str) -> Result<()> {
+    let output = announce_assignment(task, assignee)?;
+    println!("Messaged with metateam: {output}");
     Ok(())
 }
 
