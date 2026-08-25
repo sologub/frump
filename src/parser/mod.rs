@@ -161,7 +161,6 @@ pub fn parse(content: &str) -> Result<FrumpDoc> {
 
     let mut doc = FrumpDoc::new(header, team, task_collection);
     doc.next = next;
-    doc.validate_next()?;
     Ok(doc)
 }
 
@@ -316,26 +315,32 @@ fn parse_task(lines: &[&str]) -> Result<Option<Task>> {
 
     let mut task = Task::new(id, task_type, subject);
 
-    // Parse body and properties
+    // Properties form the final contiguous metadata block. Parsing a property-looking
+    // line in the middle of prose as metadata would silently truncate the body.
+    let mut property_end = lines.len();
+    while property_end > 1 && lines[property_end - 1].trim().is_empty() {
+        property_end -= 1;
+    }
+    let mut property_start = property_end;
+    while property_start > 1 && try_parse_property(lines[property_start - 1].trim()).is_some() {
+        property_start -= 1;
+    }
+
     let mut body_lines = Vec::new();
-    let mut in_body = true;
-
-    for line in &lines[1..] {
+    for line in &lines[1..property_start] {
         let trimmed = line.trim();
-
         if trimmed.is_empty() {
-            if in_body && !body_lines.is_empty() {
+            if !body_lines.is_empty() {
                 body_lines.push("");
             }
             continue;
         }
+        body_lines.push(trimmed);
+    }
 
-        // Check if this line is a property
-        if let Some((key, value)) = try_parse_property(trimmed) {
-            in_body = false;
+    for line in &lines[property_start..property_end] {
+        if let Some((key, value)) = try_parse_property(line.trim()) {
             task.add_property(key, value);
-        } else if in_body {
-            body_lines.push(trimmed);
         }
     }
 
@@ -423,6 +428,31 @@ Assigned To: John
         let task = doc.tasks.tasks().first().unwrap();
         assert_eq!(task.status(), Some("working"));
         assert_eq!(task.assignee(), Some("John"));
+    }
+
+    #[test]
+    fn report_labels_in_body_do_not_become_properties() {
+        let content = r#"# Test
+
+## Tasks
+
+### Investigation 114 - Preserve report body
+
+INVESTIGATION REPORT: evidence follows.
+
+CONTRACT 1: do not lose this paragraph.
+
+Status: investigations
+Assigned To: Ada
+"#;
+        let doc = parse(content).unwrap();
+        let task = doc.tasks.tasks().first().unwrap();
+        assert!(task.body.contains("INVESTIGATION REPORT: evidence follows."));
+        assert!(task
+            .body
+            .contains("CONTRACT 1: do not lose this paragraph."));
+        assert_eq!(task.status(), Some("investigations"));
+        assert_eq!(task.assignee(), Some("Data"));
     }
 
     #[test]

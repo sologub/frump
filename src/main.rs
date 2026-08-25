@@ -179,15 +179,19 @@ enum Commands {
         subject: Option<String>,
 
         /// New body (optional)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_body")]
         body: Option<String>,
 
+        /// Explicitly remove the current body
+        #[arg(long, conflicts_with_all = ["append_body", "append_body_msg"])]
+        clear_body: bool,
+
         /// Append text to the task body instead of replacing it
-        #[arg(long, conflicts_with = "body")]
+        #[arg(long, conflicts_with_all = ["body", "clear_body"])]
         append_body: Option<String>,
 
         /// Append text to the task body and notify every Metateam crew member
-        #[arg(long, conflicts_with_all = ["body", "append_body"])]
+        #[arg(long, conflicts_with_all = ["body", "clear_body", "append_body"])]
         append_body_msg: Option<String>,
     },
 
@@ -739,16 +743,24 @@ async fn main() -> Result<()> {
             id,
             subject,
             body,
+            clear_body,
             append_body,
             append_body_msg,
         } => {
             if subject.is_none()
                 && body.is_none()
+                && !clear_body
                 && append_body.is_none()
                 && append_body_msg.is_none()
             {
-                println!("Error: At least one of --subject or --body must be provided");
+                println!("Error: provide --subject, --body, --clear-body, or an append option");
                 return Ok(());
+            }
+            if body
+                .as_ref()
+                .is_some_and(|new_body| new_body.trim().is_empty())
+            {
+                anyhow::bail!("Body cannot be empty; use --clear-body to remove it explicitly.");
             }
 
             let mut doc = read_document(&cli.file)?;
@@ -762,6 +774,10 @@ async fn main() -> Result<()> {
                 if let Some(new_body) = body {
                     task.set_body(new_body.clone());
                     println!("Updated body for task {}", id);
+                }
+                if *clear_body {
+                    task.set_body(String::new());
+                    println!("Cleared body for task {}", id);
                 }
                 if let Some(extra) = append_body {
                     append_update(task, extra, current_crew_agent().as_deref())?;

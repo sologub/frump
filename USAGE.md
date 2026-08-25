@@ -323,6 +323,9 @@ frump update <task_id> --subject "New subject text"
 # Update body only
 frump update <task_id> --body "New detailed description"
 
+# Clear a body deliberately; an empty --body value is refused
+frump update <task_id> --clear-body
+
 # Update both
 frump update <task_id> \
   --subject "Updated title" \
@@ -347,7 +350,7 @@ frump set 12 Status working
 frump set 12 Status done
 ```
 
-`--body` replaces the body exactly. `--append-body` creates a dated Markdown update and adds the current Metateam crew member when that identity is available. `--append-body-msg` additionally sends the raw fragment to all Metateam crew members after saving the task.
+`--body` replaces the body exactly and refuses empty or whitespace-only values, so an accidental empty shell expansion cannot erase the record. Use `--clear-body` for an intentional removal. `--append-body` creates a dated Markdown update and adds the current Metateam crew member when that identity is available. `--append-body-msg` additionally sends the raw fragment to all Metateam crew members after saving the task.
 
 **Example:**
 ```bash

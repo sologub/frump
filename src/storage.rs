@@ -33,10 +33,12 @@ pub fn sharded_root(path: &Path) -> Option<PathBuf> {
 
 pub fn read(path: &Path) -> Result<FrumpDoc> {
     let Some(root) = sharded_root(path) else {
-        return parser::parse(
+        let document = parser::parse(
             &fs::read_to_string(path)
                 .with_context(|| format!("Failed to read {}", path.display()))?,
-        );
+        )?;
+        document.validate_next()?;
+        return Ok(document);
     };
     let general = parser::parse(
         &fs::read_to_string(root.join("general.md")).context("Failed to read general.md")?,

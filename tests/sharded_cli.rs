@@ -20,7 +20,7 @@ fn fixture_root() -> std::path::PathBuf {
     .unwrap();
     fs::write(
         root.join("frump/tasks/2.md"),
-        "### Task 2 - Second\n\nStatus: todo\n",
+        "### Bug 2 - Second\n\nStatus: todo\n",
     )
     .unwrap();
     root
@@ -240,6 +240,118 @@ fn list_filters_sorts_and_emits_machine_readable_tasks() {
 }
 
 #[test]
+fn update_refuses_empty_body_and_requires_an_explicit_clear() {
+    let root = unique_root("body-clear");
+    let board = single_file_board(&root);
+    let before = fs::read(&board).unwrap();
+    let binary = env!("CARGO_BIN_EXE_frump");
+
+    let empty = Command::new(binary)
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "update",
+            "1",
+            "--body",
+            "   ",
+        ])
+        .output()
+        .unwrap();
+    assert!(!empty.status.success());
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("use --clear-body"));
+    assert_eq!(fs::read(&board).unwrap(), before);
+
+    let set = Command::new(binary)
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "update",
+            "1",
+            "--body",
+            "A durable record",
+        ])
+        .output()
+        .unwrap();
+    assert!(set.status.success());
+    assert!(fs::read_to_string(&board)
+        .unwrap()
+        .contains("A durable record"));
+
+    let clear = Command::new(binary)
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "update",
+            "1",
+            "--clear-body",
+        ])
+        .output()
+        .unwrap();
+    assert!(clear.status.success());
+    assert!(!fs::read_to_string(&board)
+        .unwrap()
+        .contains("A durable record"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn body_replacement_stays_a_replacement_and_appends_after_the_complete_body() {
+    let root = unique_root("body-order");
+    let board = root.join("frump.md");
+    fs::write(
+        &board,
+        "# Check\n\n## Tasks\n\n### Investigation 4 - Preserve reports\n\nFraming text.\n\nINVESTIGATION REPORT: first report.\n\nStatus: investigations\n",
+    )
+    .unwrap();
+    let binary = env!("CARGO_BIN_EXE_frump");
+
+    for body in ["First replacement", "Second replacement"] {
+        let update = Command::new(binary)
+            .args([
+                "--file",
+                board.to_str().unwrap(),
+                "update",
+                "4",
+                "--body",
+                body,
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            update.status.success(),
+            "{}",
+            String::from_utf8_lossy(&update.stderr)
+        );
+    }
+    let replaced = fs::read_to_string(&board).unwrap();
+    assert!(!replaced.contains("First replacement"));
+    assert_eq!(replaced.matches("Second replacement").count(), 1);
+    assert!(!replaced.contains("INVESTIGATION REPORT: first report."));
+
+    let append = Command::new(binary)
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "update",
+            "4",
+            "--append-body",
+            "Dated evidence",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        append.status.success(),
+        "{}",
+        String::from_utf8_lossy(&append.stderr)
+    );
+    let appended = fs::read_to_string(&board).unwrap();
+    assert!(appended.find("Second replacement").unwrap() < appended.find("_Update ").unwrap());
+    assert!(appended.find("_Update ").unwrap() < appended.find("Dated evidence").unwrap());
+    assert_eq!(appended.matches("Second replacement").count(), 1);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn next_blocks_out_of_order_todo_transitions_and_prunes_done_work() {
     let root = unique_root("next");
     let board = single_file_board(&root);
@@ -309,6 +421,39 @@ fn next_blocks_out_of_order_todo_transitions_and_prunes_done_work() {
         String::from_utf8(cleared.stdout).unwrap().trim(),
         "No next tasks planned."
     );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sharded_next_accepts_mixed_card_types_and_refuses_missing_ids_atomically() {
+    let root = fixture_root();
+    let board = root.join("frump");
+    let binary = env!("CARGO_BIN_EXE_frump");
+
+    let set = Command::new(binary)
+        .args(["--file", board.to_str().unwrap(), "next", "1", "2"])
+        .output()
+        .unwrap();
+    assert!(
+        set.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    let listed = Command::new(binary)
+        .args(["--file", board.to_str().unwrap(), "next"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(listed.stdout).unwrap().trim(), "1\n2");
+
+    let general = board.join("general.md");
+    let before = fs::read(&general).unwrap();
+    let missing = Command::new(binary)
+        .args(["--file", board.to_str().unwrap(), "next", "1", "999"])
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("missing task 999"));
+    assert_eq!(fs::read(general).unwrap(), before);
     let _ = fs::remove_dir_all(root);
 }
 
