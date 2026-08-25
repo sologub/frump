@@ -55,6 +55,7 @@ fn cli_updates_only_the_changed_sharded_task() {
             .contains("Status: done")
     );
     assert_eq!(fs::read(root.join("frump/tasks/2.md")).unwrap(), untouched);
+    assert!(!root.join("frump/.frump.lock").exists());
 
     let list = Command::new(binary)
         .args(["--file", board.to_str().unwrap(), "list"])
@@ -64,6 +65,72 @@ fn cli_updates_only_the_changed_sharded_task() {
     assert!(String::from_utf8(list.stdout)
         .unwrap()
         .contains("Task 1 - First"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sharded_commit_tracks_task_data_without_a_lock_file() {
+    let root = fixture_root();
+    let board = root.join("frump");
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "Frump Test"],
+        vec!["config", "user.email", "frump-test@example.invalid"],
+        vec!["add", "frump"],
+        vec!["commit", "-qm", "Initial board"],
+    ] {
+        let status = Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    let binary = env!("CARGO_BIN_EXE_frump");
+    let set = Command::new(binary)
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "set",
+            "1",
+            "Status",
+            "done",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        set.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    assert!(!board.join(".frump.lock").exists());
+
+    let commit = Command::new(binary)
+        .current_dir(&root)
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "commit",
+            "-m",
+            "Update task",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let files = Command::new("git")
+        .current_dir(&root)
+        .args(["show", "--name-only", "--format=", "HEAD"])
+        .output()
+        .unwrap();
+    let files = String::from_utf8(files.stdout).unwrap();
+    assert!(files.contains("frump/general.md"));
+    assert!(files.contains("frump/tasks/1.md"));
+    assert!(!files.contains(".frump.lock"));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -242,5 +309,56 @@ fn next_blocks_out_of_order_todo_transitions_and_prunes_done_work() {
         String::from_utf8(cleared.stdout).unwrap().trim(),
         "No next tasks planned."
     );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn append_body_msg_saves_the_update_and_broadcasts_the_raw_fragment() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = unique_root("append-message");
+    let board = single_file_board(&root);
+    let tools = root.join("tools");
+    fs::create_dir(&tools).unwrap();
+    let metateam = tools.join("metateam");
+    fs::write(
+        &metateam,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FRUMP_MESSAGE_ARGS\"\nprintf 'delivered by test\\n'\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&metateam).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&metateam, permissions).unwrap();
+    let arguments = root.join("message-arguments");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_frump"))
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "update",
+            "1",
+            "--append-body-msg",
+            "Evidence accepted",
+        ])
+        .env("PATH", &tools)
+        .env("FRUMP_MESSAGE_ARGS", &arguments)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("Messaged with metateam: delivered by test"));
+    assert_eq!(
+        fs::read_to_string(arguments).unwrap(),
+        "crew\nmessage\nall\nEvidence accepted\n"
+    );
+    assert!(fs::read_to_string(board)
+        .unwrap()
+        .contains("Evidence accepted"));
     let _ = fs::remove_dir_all(root);
 }

@@ -75,7 +75,7 @@ frump unset 12 Status
 
 `frump close` requires `Status: done` and every active prerequisite to be done. A new status remains allowed, but emits a warning so project vocabulary does not drift accidentally. `frump add` warns when similar existing tasks are found but still creates the task.
 
-Frump automatically maintains `Last Updated` whenever it creates or changes a task. Property values are compact metadata and may be at most 40 bytes; put longer evidence, reports, and rationale in the body. `--append-body` adds a dated Markdown update and, when invoked by a Metateam crew member, records that member's name. Normal web Save deliberately replaces the body with exactly the text in the editor.
+Frump automatically maintains `Last Updated` whenever it creates or changes a task. Property values are compact metadata and may be at most 40 bytes; put longer evidence, reports, and rationale in the body. `--append-body` adds a dated Markdown update and, when invoked by a Metateam crew member, records that member's name. `--append-body-msg` does the same, then sends the raw appended fragment with `metateam crew message all`. Normal web Save deliberately replaces the body with exactly the text in the editor.
 
 Initialize a new board explicitly:
 
@@ -330,6 +330,9 @@ frump update <task_id> \
 
 # Append dated evidence without replacing the existing body
 frump update <task_id> --append-body "Validation passed after rebuild"
+
+# Append dated evidence and notify the active Metateam crew
+frump update <task_id> --append-body-msg "Validation passed after rebuild"
 ```
 
 ### next - Manage the ordered todo plan
@@ -344,7 +347,7 @@ frump set 12 Status working
 frump set 12 Status done
 ```
 
-`--body` replaces the body exactly. `--append-body` creates a dated Markdown update and adds the current Metateam crew member when that identity is available.
+`--body` replaces the body exactly. `--append-body` creates a dated Markdown update and adds the current Metateam crew member when that identity is available. `--append-body-msg` additionally sends the raw fragment to all Metateam crew members after saving the task.
 
 **Example:**
 ```bash

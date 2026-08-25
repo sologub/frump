@@ -224,15 +224,12 @@ fn write_document(file: &PathBuf, doc: &FrumpDoc) -> Result<()> {
 }
 
 fn acquire_write_lock(file: &PathBuf) -> Result<fs::File> {
-    let lock_path = if file.is_dir() {
-        file.join(".frump.lock")
-    } else {
-        file.clone()
-    };
+    let lock_path = storage::sharded_root(file)
+        .map(|root| root.join("general.md"))
+        .unwrap_or_else(|| file.clone());
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .create(file.is_dir())
         .open(lock_path)?;
     lock.lock_exclusive()?;
     Ok(lock)

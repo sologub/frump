@@ -185,6 +185,10 @@ enum Commands {
         /// Append text to the task body instead of replacing it
         #[arg(long, conflicts_with = "body")]
         append_body: Option<String>,
+
+        /// Append text to the task body and notify every Metateam crew member
+        #[arg(long, conflicts_with_all = ["body", "append_body"])]
+        append_body_msg: Option<String>,
     },
 
     /// Search tasks by keyword
@@ -736,8 +740,13 @@ async fn main() -> Result<()> {
             subject,
             body,
             append_body,
+            append_body_msg,
         } => {
-            if subject.is_none() && body.is_none() && append_body.is_none() {
+            if subject.is_none()
+                && body.is_none()
+                && append_body.is_none()
+                && append_body_msg.is_none()
+            {
                 println!("Error: At least one of --subject or --body must be provided");
                 return Ok(());
             }
@@ -757,11 +766,30 @@ async fn main() -> Result<()> {
                 if let Some(extra) = append_body {
                     append_update(task, extra, current_crew_agent().as_deref())?;
                     println!("Appended body for task {}", id);
+                } else if let Some(extra) = append_body_msg {
+                    append_update(task, extra, current_crew_agent().as_deref())?;
+                    println!("Appended body for task {}", id);
                 } else {
                     touch_task(task);
                 }
 
                 storage::write(&cli.file, &doc)?;
+                if let Some(message) = append_body_msg {
+                    let output = std::process::Command::new("metateam")
+                        .args(["crew", "message", "all", message])
+                        .output()
+                        .context("Failed to run Metateam")?;
+                    if !output.status.success() {
+                        anyhow::bail!(
+                            "Metateam could not send message: {}",
+                            String::from_utf8_lossy(&output.stderr).trim()
+                        );
+                    }
+                    println!(
+                        "Messaged with metateam: {}",
+                        String::from_utf8_lossy(&output.stdout).trim_end()
+                    );
+                }
             } else {
                 anyhow::bail!("Task {} not found.", id);
             }
@@ -1463,28 +1491,29 @@ fn discover_task_file() -> Result<PathBuf> {
 }
 
 fn commit_task_file(file: &Path, message: &str) -> Result<()> {
-    let parent = file.parent().unwrap_or_else(|| Path::new("."));
-    let name = file
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("Task file path has no filename"))?;
+    let (directory, paths): (PathBuf, Vec<&str>) = if let Some(root) = storage::sharded_root(file) {
+        (root, vec!["general.md", "tasks"])
+    } else {
+        let parent = file.parent().unwrap_or_else(|| Path::new("."));
+        let name = file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("Task file path has no filename"))?;
+        (parent.to_path_buf(), vec![name])
+    };
     let add = std::process::Command::new("git")
-        .current_dir(parent)
+        .current_dir(&directory)
         .args(["add", "--"])
-        .arg(name)
+        .args(&paths)
         .status()
         .context("Failed to stage task file")?;
     if !add.success() {
         anyhow::bail!("Git could not stage {}", file.display());
     }
     let commit = std::process::Command::new("git")
-        .current_dir(parent)
-        .args([
-            "commit",
-            "-m",
-            message,
-            "--",
-            name.to_str().unwrap_or("frump.md"),
-        ])
+        .current_dir(&directory)
+        .args(["commit", "-m", message, "--"])
+        .args(&paths)
         .status()
         .context("Failed to commit task file")?;
     if !commit.success() {
@@ -1782,15 +1811,12 @@ fn all_query_tokens_match(query: &str, subject: &str, body: &str) -> bool {
 
 fn acquire_write_lock(file: &Path) -> Result<std::fs::File> {
     use fs2::FileExt;
-    let lock_path = if file.is_dir() {
-        file.join(".frump.lock")
-    } else {
-        file.to_path_buf()
-    };
+    let lock_path = storage::sharded_root(file)
+        .map(|root| root.join("general.md"))
+        .unwrap_or_else(|| file.to_path_buf());
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
-        .create(file.is_dir())
         .open(&lock_path)
         .with_context(|| format!("Failed to open {} for locking", lock_path.display()))?;
     lock.lock_exclusive()
