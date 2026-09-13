@@ -288,6 +288,7 @@ frump resolve-conflicts --commit
 - **Bulk operations** for batch modifications
 - **Import/Export** (JSON and CSV formats)
 - **Conflict resolution** for merge scenarios
+- **Metateam integration**: task notifications and assignment announcements ([metateam.ai](https://metateam.ai))
 - **Property-based testing** with 60+ tests passing
 - **Comprehensive docs** (USAGE.md, TUTORIAL.md)
 
