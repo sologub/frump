@@ -92,15 +92,16 @@ impl FrumpRepo {
             let commit = self.repo.find_commit(oid)?;
 
             // Check if task exists in this commit
-            let task_exists = if let Ok(content) = self.read_file_at_commit(&commit, &self.frump_file) {
-                if let Ok(doc) = parser::parse(&content) {
-                    doc.tasks.find_by_id(task_id).is_some()
+            let task_exists =
+                if let Ok(content) = self.read_file_at_commit(&commit, &self.frump_file) {
+                    if let Ok(doc) = parser::parse(&content) {
+                        doc.tasks.find_by_id(task_id).is_some()
+                    } else {
+                        false
+                    }
                 } else {
                     false
-                }
-            } else {
-                false
-            };
+                };
 
             // Determine change type
             let change_type = if task_exists && !task_exists_in_previous {
@@ -121,10 +122,7 @@ impl FrumpRepo {
             task_exists_in_previous = task_exists;
         }
 
-        Ok(TaskHistory {
-            task_id,
-            commits,
-        })
+        Ok(TaskHistory { task_id, commits })
     }
 
     /// List all tasks that have been deleted (in history but not current)
@@ -133,8 +131,8 @@ impl FrumpRepo {
         let mut current_tasks = HashSet::new();
 
         // Get current tasks
-        let current_content = std::fs::read_to_string(&self.frump_file)
-            .context("Failed to read current frump.md")?;
+        let current_content =
+            std::fs::read_to_string(&self.frump_file).context("Failed to read current frump.md")?;
         let current_doc = parser::parse(&current_content)?;
 
         for task in current_doc.tasks.tasks() {
@@ -155,13 +153,10 @@ impl FrumpRepo {
                 if let Ok(doc) = parser::parse(&content) {
                     for task in doc.tasks.tasks() {
                         all_historical_tasks.insert(task.id);
-                        // Store task info (last seen wins, but we really want first)
-                        if !task_info_map.contains_key(&task.id) {
-                            task_info_map.insert(
-                                task.id,
-                                (task.task_type.clone(), task.subject.clone()),
-                            );
-                        }
+                        // Keep the information from the newest commit that contains the task.
+                        task_info_map
+                            .entry(task.id)
+                            .or_insert_with(|| (task.task_type.clone(), task.subject.clone()));
                     }
                 }
             }
@@ -205,14 +200,11 @@ impl FrumpRepo {
     /// Convert a commit to TaskCommit info
     fn commit_to_info(&self, commit: &Commit, change_type: ChangeType) -> Result<TaskCommit> {
         let author = commit.author();
-        let author_name = author
-            .name()
-            .unwrap_or("Unknown")
-            .to_string();
+        let author_name = author.name().unwrap_or("Unknown").to_string();
 
         let timestamp = commit.time().seconds();
-        let date = DateTime::from_timestamp(timestamp, 0)
-            .ok_or_else(|| anyhow!("Invalid timestamp"))?;
+        let date =
+            DateTime::from_timestamp(timestamp, 0).ok_or_else(|| anyhow!("Invalid timestamp"))?;
 
         Ok(TaskCommit {
             hash: commit.id().to_string(),

@@ -211,8 +211,8 @@ fn serialize_task(task: &Task) -> String {
         TaskCollection::new(vec![task.clone()]),
     );
     parser::serialize(&doc)
-        .splitn(2, "## Tasks\n\n")
-        .nth(1)
+        .split_once("## Tasks\n\n")
+        .map(|(_, tasks)| tasks)
         .unwrap_or_default()
         .to_string()
 }

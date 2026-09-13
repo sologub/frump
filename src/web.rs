@@ -8,7 +8,12 @@ use axum::{
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    net::SocketAddr,
+    path::{Path as FsPath, PathBuf},
+    sync::Arc,
+};
 
 use crate::{
     announce_assignment, mark_updated, now_utc, send_metateam_message, storage,
@@ -221,23 +226,23 @@ async fn notify_task(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn read_document(file: &PathBuf) -> Result<DocumentDto> {
+fn read_document(file: &FsPath) -> Result<DocumentDto> {
     Ok(document_to_dto(&read_parsed_document(file)?))
 }
 
-fn read_parsed_document(file: &PathBuf) -> Result<FrumpDoc> {
+fn read_parsed_document(file: &FsPath) -> Result<FrumpDoc> {
     storage::read(file).with_context(|| format!("Failed to read task board {}", file.display()))
 }
 
-fn write_document(file: &PathBuf, doc: &FrumpDoc) -> Result<()> {
+fn write_document(file: &FsPath, doc: &FrumpDoc) -> Result<()> {
     storage::write(file, doc)
         .with_context(|| format!("Failed to write task board {}", file.display()))
 }
 
-fn acquire_write_lock(file: &PathBuf) -> Result<fs::File> {
+fn acquire_write_lock(file: &FsPath) -> Result<fs::File> {
     let lock_path = storage::sharded_root(file)
         .map(|root| root.join("general.md"))
-        .unwrap_or_else(|| file.clone());
+        .unwrap_or_else(|| file.to_path_buf());
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)

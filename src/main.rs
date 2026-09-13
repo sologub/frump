@@ -338,7 +338,7 @@ enum BulkAction {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut cli = Cli::parse();
-    if cli.file == PathBuf::from(".") {
+    if cli.file == Path::new(".") {
         cli.file = if matches!(cli.command, Commands::Init { .. }) {
             PathBuf::from("frump.md")
         } else {
@@ -1047,11 +1047,12 @@ async fn main() -> Result<()> {
         Commands::Dependents { id } => {
             let doc = read_document(&cli.file)?;
             let id = TaskId::new(*id)?;
-            for task in doc.tasks.tasks().iter().filter(|task| {
-                dependency_ids(task)
-                    .iter()
-                    .any(|dependency| *dependency == id)
-            }) {
+            for task in doc
+                .tasks
+                .tasks()
+                .iter()
+                .filter(|task| dependency_ids(task).contains(&id))
+            {
                 println!("{} {} - {}", task.task_type, task.id, task.subject);
             }
         }
@@ -1104,7 +1105,7 @@ async fn main() -> Result<()> {
                 let mut current_doc = read_document(&cli.file)?;
 
                 // Find next available ID
-                let mut next_id = current_doc
+                let first_id = current_doc
                     .tasks
                     .max_id()
                     .map(|id| id.value() + 1)
@@ -1113,8 +1114,8 @@ async fn main() -> Result<()> {
                 // Add imported tasks with new IDs
                 let mut added = 0;
                 let mut announcements = Vec::new();
-                for task in imported_doc.tasks.tasks() {
-                    let new_id = TaskId::new(next_id)?;
+                for (offset, task) in imported_doc.tasks.tasks().iter().enumerate() {
+                    let new_id = TaskId::new(first_id + offset as u32)?;
                     let mut new_task =
                         Task::new(new_id, task.task_type.clone(), task.subject.clone());
                     new_task.set_body(task.body.clone());
@@ -1130,7 +1131,6 @@ async fn main() -> Result<()> {
                     }
 
                     current_doc.tasks.add(new_task);
-                    next_id += 1;
                     added += 1;
                 }
 
@@ -1358,10 +1358,7 @@ async fn main() -> Result<()> {
             let mut id_occurrences: std::collections::HashMap<TaskId, Vec<&Task>> =
                 std::collections::HashMap::new();
             for task in doc.tasks.tasks() {
-                id_occurrences
-                    .entry(task.id)
-                    .or_insert_with(Vec::new)
-                    .push(task);
+                id_occurrences.entry(task.id).or_default().push(task);
             }
 
             let duplicates: Vec<_> = id_occurrences
@@ -1392,10 +1389,7 @@ async fn main() -> Result<()> {
             let mut id_occurrences: std::collections::HashMap<TaskId, Vec<usize>> =
                 std::collections::HashMap::new();
             for (idx, task) in doc.tasks.tasks().iter().enumerate() {
-                id_occurrences
-                    .entry(task.id)
-                    .or_insert_with(Vec::new)
-                    .push(idx);
+                id_occurrences.entry(task.id).or_default().push(idx);
             }
 
             let duplicates: Vec<_> = id_occurrences
@@ -1447,7 +1441,8 @@ async fn main() -> Result<()> {
 
                 // Stage the frump.md file
                 let status = std::process::Command::new("git")
-                    .args(&["add", cli.file.to_str().unwrap()])
+                    .arg("add")
+                    .arg(&cli.file)
                     .status()
                     .context("Failed to stage file with git")?;
 
@@ -1458,7 +1453,7 @@ async fn main() -> Result<()> {
 
                 // Create commit
                 let status = std::process::Command::new("git")
-                    .args(&["commit", "-m", &commit_message])
+                    .args(["commit", "-m", &commit_message])
                     .status()
                     .context("Failed to create git commit")?;
 

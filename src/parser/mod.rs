@@ -263,12 +263,10 @@ fn parse_team_member(line: &str) -> Result<Option<TeamMember>> {
             let email = Email::new(email_str)?;
 
             let role = if email_end + 1 < line.len() {
-                let remainder = line[email_end + 1..].trim();
-                if remainder.starts_with('-') {
-                    Some(remainder[1..].trim().to_string())
-                } else {
-                    None
-                }
+                line[email_end + 1..]
+                    .trim()
+                    .strip_prefix('-')
+                    .map(|role| role.trim().to_string())
             } else {
                 None
             };
@@ -447,12 +445,14 @@ Assigned To: Ada
 "#;
         let doc = parse(content).unwrap();
         let task = doc.tasks.tasks().first().unwrap();
-        assert!(task.body.contains("INVESTIGATION REPORT: evidence follows."));
+        assert!(task
+            .body
+            .contains("INVESTIGATION REPORT: evidence follows."));
         assert!(task
             .body
             .contains("CONTRACT 1: do not lose this paragraph."));
         assert_eq!(task.status(), Some("investigations"));
-        assert_eq!(task.assignee(), Some("Data"));
+        assert_eq!(task.assignee(), Some("Ada"));
     }
 
     #[test]
@@ -603,11 +603,6 @@ mod property_tests {
     use super::*;
     use proptest::prelude::*;
 
-    // Helper to generate valid property keys (capitalized, max 3 words)
-    fn property_key_strategy() -> impl Strategy<Value = String> {
-        prop::string::string_regex("[A-Z][a-z]{1,10}( [A-Z][a-z]{1,10}){0,2}").unwrap()
-    }
-
     // Helper to generate valid task IDs
     fn task_id_strategy() -> impl Strategy<Value = u32> {
         1u32..=1000u32
@@ -629,7 +624,7 @@ mod property_tests {
                 let serialized = serialize(&doc);
                 if let Ok(doc2) = parse(&serialized) {
                     prop_assert_eq!(doc.tasks.len(), doc2.tasks.len());
-                    if doc.tasks.len() > 0 {
+                    if !doc.tasks.is_empty() {
                         prop_assert_eq!(
                             doc.tasks.tasks()[0].id.value(),
                             doc2.tasks.tasks()[0].id.value()
@@ -676,7 +671,7 @@ mod property_tests {
                 let serialized = serialize(&doc);
                 if let Ok(doc2) = parse(&serialized) {
                     prop_assert_eq!(doc.team.len(), doc2.team.len());
-                    if doc.team.len() > 0 {
+                    if !doc.team.is_empty() {
                         prop_assert_eq!(
                             &doc.team.members()[0].name,
                             &doc2.team.members()[0].name

@@ -161,8 +161,8 @@ mod tests {
     #[test]
     fn test_team_member_with_role() {
         let email = Email::new("john@example.com").unwrap();
-        let member = TeamMember::new("John Doe".to_string(), email)
-            .with_role("Developer".to_string());
+        let member =
+            TeamMember::new("John Doe".to_string(), email).with_role("Developer".to_string());
         assert_eq!(member.role, Some("Developer".to_string()));
     }
 
