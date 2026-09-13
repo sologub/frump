@@ -251,7 +251,7 @@ frump add -t Feature "Add export feature" \
 - Checks git history to avoid ID conflicts
 - Assigns to the first team member if no assignee is specified
 
-Whenever a task receives a new `Assigned To` value, Frump saves the board first and then announces `<type> <id> is assigned to <assignee>.` to all Metateam crew members as `frump`.
+Whenever a task receives a new `Assigned To` value, Frump saves the board first and then announces `<type> <id> is assigned to <assignee>.` to all Metateam crew members as `frump`. Metateam is optional: when the `metateam` command is not on `PATH`, the announcement is skipped and the assignment still succeeds.
 
 ## Task Management
 
@@ -352,7 +352,7 @@ frump set 12 Status working
 frump set 12 Status done
 ```
 
-`--body` replaces the body exactly and refuses empty or whitespace-only values, so an accidental empty shell expansion cannot erase the record. Use `--clear-body` for an intentional removal. `--append-body` creates a dated Markdown update and adds the current Metateam crew member when that identity is available. `--append-body-msg` additionally sends the raw fragment to all Metateam crew members after saving the task.
+`--body` replaces the body exactly and refuses empty or whitespace-only values, so an accidental empty shell expansion cannot erase the record. Use `--clear-body` for an intentional removal. `--append-body` creates a dated Markdown update and adds the current Metateam crew member when that identity is available. `--append-body-msg` additionally sends the raw fragment to all Metateam crew members after saving the task; when the `metateam` command is not on `PATH`, the update is saved and the message is skipped.
 
 **Example:**
 ```bash

@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use crate::{
-    announce_assignment, mark_updated, now_utc, storage, validate_property_value, FrumpDoc,
-    FrumpRepo, PropertyKey, Task, TaskId, TaskType,
+    announce_assignment, mark_updated, now_utc, send_metateam_message, storage,
+    validate_property_value, FrumpDoc, FrumpRepo, PropertyKey, Task, TaskId, TaskType,
 };
 
 #[derive(Clone)]
@@ -206,23 +206,18 @@ async fn notify_task(
         task.subject,
         input.message.trim()
     );
-    let output = std::process::Command::new("metateam")
-        .args([
+    let _ = send_metateam_message(
+        &[
             "crew",
             "message",
             "--from",
             "frump",
             input.recipient.trim(),
             &text,
-        ])
-        .output()
-        .context("Failed to run Metateam")?;
-    if !output.status.success() {
-        return Err(ApiError(anyhow::anyhow!(
-            "Metateam could not send notification: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
+        ],
+        "send notification",
+    )
+    .map_err(ApiError)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

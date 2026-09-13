@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use frump::{
     announce_assignment, append_update, export_csv, export_json, import_json, mark_updated,
-    now_utc, storage, validate_property_value, ChangeType, FrumpRepo, PropertyKey, Task, TaskId,
-    TaskTemplate, TaskType, TemplateManager, LAST_UPDATED_PROPERTY,
+    now_utc, send_metateam_message, storage, validate_property_value, ChangeType, FrumpRepo,
+    PropertyKey, Task, TaskId, TaskTemplate, TaskType, TemplateManager, LAST_UPDATED_PROPERTY,
 };
 use serde::Serialize;
 
@@ -813,20 +813,11 @@ async fn main() -> Result<()> {
 
                 storage::write(&cli.file, &doc)?;
                 if let Some(message) = append_body_msg {
-                    let output = std::process::Command::new("metateam")
-                        .args(["crew", "message", "all", message])
-                        .output()
-                        .context("Failed to run Metateam")?;
-                    if !output.status.success() {
-                        anyhow::bail!(
-                            "Metateam could not send message: {}",
-                            String::from_utf8_lossy(&output.stderr).trim()
-                        );
+                    if let Some(output) =
+                        send_metateam_message(&["crew", "message", "all", message], "send message")?
+                    {
+                        println!("Messaged with metateam: {output}");
                     }
-                    println!(
-                        "Messaged with metateam: {}",
-                        String::from_utf8_lossy(&output.stdout).trim_end()
-                    );
                 }
             } else {
                 anyhow::bail!("Task {} not found.", id);
@@ -1613,8 +1604,9 @@ fn commit_task_file(file: &Path, message: &str) -> Result<()> {
 }
 
 fn print_assignment_announcement(task: &Task, assignee: &str) -> Result<()> {
-    let output = announce_assignment(task, assignee)?;
-    println!("Messaged with metateam: {output}");
+    if let Some(output) = announce_assignment(task, assignee)? {
+        println!("Messaged with metateam: {output}");
+    }
     Ok(())
 }
 

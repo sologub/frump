@@ -716,3 +716,78 @@ fn assignment_changes_are_announced_after_the_board_is_written() {
     );
     let _ = fs::remove_dir_all(root);
 }
+
+#[cfg(unix)]
+#[test]
+fn append_body_msg_without_metateam_saves_the_update_and_succeeds() {
+    let root = unique_root("append-message-missing");
+    let board = single_file_board(&root);
+    let empty_path = root.join("no-tools");
+    fs::create_dir(&empty_path).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_frump"))
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "update",
+            "1",
+            "--append-body-msg",
+            "Evidence accepted without a notification channel",
+        ])
+        .env("PATH", &empty_path)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Messaged with metateam"),
+        "metateam is absent, so nothing may be reported as messaged: {stdout}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).is_empty(),
+        "an absent optional command is not an error"
+    );
+    assert!(fs::read_to_string(&board)
+        .unwrap()
+        .contains("Evidence accepted without a notification channel"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn assignment_without_metateam_keeps_the_assignee_and_succeeds() {
+    let root = unique_root("assignment-missing");
+    let board = single_file_board(&root);
+    let empty_path = root.join("no-tools");
+    fs::create_dir(&empty_path).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_frump"))
+        .args(["--file", board.to_str().unwrap(), "assign", "1", "Ada"])
+        .env("PATH", &empty_path)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Messaged with metateam"),
+        "metateam is absent, so nothing may be reported as messaged: {stdout}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).is_empty(),
+        "an absent optional command is not an error"
+    );
+    assert!(fs::read_to_string(&board)
+        .unwrap()
+        .contains("Assigned To: Ada"));
+    let _ = fs::remove_dir_all(root);
+}
