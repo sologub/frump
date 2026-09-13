@@ -89,54 +89,7 @@ Use `frump commit -m "short message"` to stage and commit only the task file; it
 
 ### Sharded storage
 
-`frump migrate` converts `frump.md` into `frump/`, containing `general.md` and one Markdown file per task in `frump/tasks/`. It stages and verifies the complete destination before replacing the source file, refuses an existing destination, and leaves one active board. Invoke the migrated board with `--file frump`.
-
-Columns are built from a property you choose: `Status` by default, or any other
-property in the file, such as `Assigned To`. Drag a card between columns to
-change that property, or edit it in the task view. Search matches ids,
-subjects, bodies and properties; the search text, column order, collapsed
-columns, sort, density, theme and scroll positions are remembered per board in
-the browser, so a reload comes back to the same view. An open task, and an open notify panel,
-are addressed in the URL, so a reload reopens exactly what was open — with the
-unsaved draft or half-written message it had — and Back steps out of it.
-Saving a task keeps it open and reports it; closing is a separate act, and the
-close button reads Cancel while there are unsaved changes and Close when there
-are none. Leaving with unsaved changes by Escape, the backdrop or Back keeps
-that work and says so; reopening the task restores it. Keyboard: `/` focuses search,
-`n` opens a new task, `Alt` with the arrow keys moves the focused card between
-columns, `Escape` closes the dialog.
-
-Task bodies are rendered as Markdown on the cards — emphasis, inline code, code
-blocks, lists, quotes and links. Clicking a card opens the task beside the
-board, below the toolbar, so the header, the search box and the columns all keep
-working while you read or edit. Drag the divider to resize the panel, or use the
-arrow keys on it; double click resets it. It resizes freely: the only limits are
-keeping the divider on screen and the panel wide enough to grab again. A button in the task header switches
-to full screen and back, and both the mode and the width are remembered. The
-task view lays itself out from the width it actually has, not from the mode: a
-panel dragged wide gets the same two-column form as full screen, and full screen
-in a small window stacks like a narrow panel. An unedited body opens scrolled to its end, because task bodies grow
-as a log. A value that changes in the file while the task is open blinks in
-place, and the card it belongs to blinks on the board.
-The body field knows Markdown while you type: Enter continues a list or a quote
-and ends it on an empty item, ordered lists renumber, Tab and Shift+Tab indent
-within a list, Ctrl+B, Ctrl+I and Ctrl+K wrap the selection, and Ctrl+Enter
-saves. Normal Save replaces the body exactly with the editor text. Status, type and every property offer the values already used elsewhere
-in the file as a dropdown, while still accepting anything you type.
-Refreshes are incremental: only the cards that actually changed are redrawn, and
-a card changed by another tool flashes once, so an open board can be left
-running while `frump` edits the file from the command line.
-
-An open task view is never discarded by an external change. If the file changes
-under an edit in progress, the draft stays exactly as typed and the task view
-asks which version should win: reload from the file, or keep the draft and let
-the next save overwrite. If the task is removed from the file while it is being
-edited, the draft can be saved as a new task.
-
-Each task also has a notify control, on the card and in the task view, that
-sends a message about that task to a crew member through Metateam; the task id
-and subject are added for you. If the `metateam` command is not installed, the
-notification is skipped and nothing else changes.
+Frump reads two board layouts. A single `frump.md` file keeps the whole board in one file, which suits small boards. A directory board keeps the shared `frump/general.md` and one Markdown file per task under `frump/tasks/`, so an edit rewrites only the file that changed instead of the entire board — the layout to use for a heavily edited board, where rewriting everything on every change is unnecessary write volume on the SSD. `frump migrate` converts a single file into the directory layout, and `--file frump` selects the migrated board.
 
 ## CLI Reference
 
