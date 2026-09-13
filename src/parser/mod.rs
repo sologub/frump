@@ -72,25 +72,31 @@ use crate::domain::*;
 pub fn parse(content: &str) -> Result<FrumpDoc> {
     let mut header = String::new();
     let mut team_members = Vec::new();
+    let mut next = Vec::new();
     let mut tasks = Vec::new();
 
     let lines: Vec<&str> = content.lines().collect();
-    let mut i = 0;
-
-    // Parse header (everything before ## Team or ## Tasks)
-    while i < lines.len() {
-        let line = lines[i].trim();
-        if line.to_uppercase().starts_with("## TEAM") || line.to_uppercase().starts_with("## TASKS") {
-            break;
-        }
-        header.push_str(lines[i]);
+    let section = |name: &str| {
+        lines
+            .iter()
+            .position(|line| line.trim().eq_ignore_ascii_case(name))
+    };
+    let team_start = section("## Team");
+    let next_start = section("## Next");
+    let tasks_start = section("## Tasks");
+    let first_section = [team_start, next_start, tasks_start]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(lines.len());
+    for line in &lines[..first_section] {
+        header.push_str(line);
         header.push('\n');
-        i += 1;
     }
 
     // Parse Team section if present
-    if i < lines.len() && lines[i].trim().to_uppercase().starts_with("## TEAM") {
-        i += 1; // Skip the ## Team line
+    if let Some(start) = team_start {
+        let mut i = start + 1;
         while i < lines.len() {
             let line = lines[i].trim();
             if line.starts_with("## ") {
@@ -105,9 +111,28 @@ pub fn parse(content: &str) -> Result<FrumpDoc> {
         }
     }
 
+    if let Some(start) = next_start {
+        let mut i = start + 1;
+        while i < lines.len() && !lines[i].trim().starts_with("## ") {
+            let value = lines[i]
+                .trim()
+                .trim_start_matches("- ")
+                .trim_start_matches("* ")
+                .trim();
+            if !value.is_empty() {
+                next.push(TaskId::new(
+                    value
+                        .parse()
+                        .map_err(|_| anyhow!("Invalid Next task ID: {value}"))?,
+                )?);
+            }
+            i += 1;
+        }
+    }
+
     // Parse Tasks section if present
-    if i < lines.len() && lines[i].trim().to_uppercase().starts_with("## TASKS") {
-        i += 1; // Skip the ## Tasks line
+    if let Some(start) = tasks_start {
+        let mut i = start + 1;
 
         while i < lines.len() {
             let line = lines[i].trim();
@@ -134,7 +159,9 @@ pub fn parse(content: &str) -> Result<FrumpDoc> {
     let team = Team::new(team_members);
     let task_collection = TaskCollection::new(tasks);
 
-    Ok(FrumpDoc::new(header, team, task_collection))
+    let mut doc = FrumpDoc::new(header, team, task_collection);
+    doc.next = next;
+    Ok(doc)
 }
 
 /// Serialize a Frump document to Markdown format.
@@ -187,10 +214,21 @@ pub fn serialize(doc: &FrumpDoc) -> String {
         output.push('\n');
     }
 
+    if !doc.next.is_empty() {
+        output.push_str("## Next\n\n");
+        for id in &doc.next {
+            output.push_str(&format!("- {}\n", id));
+        }
+        output.push('\n');
+    }
+
     // Write Tasks section
     output.push_str("## Tasks\n\n");
     for task in doc.tasks.tasks() {
-        output.push_str(&format!("### {} {} - {}\n", task.task_type, task.id, task.subject));
+        output.push_str(&format!(
+            "### {} {} - {}\n",
+            task.task_type, task.id, task.subject
+        ));
 
         if !task.body.is_empty() {
             output.push('\n');
@@ -225,12 +263,10 @@ fn parse_team_member(line: &str) -> Result<Option<TeamMember>> {
             let email = Email::new(email_str)?;
 
             let role = if email_end + 1 < line.len() {
-                let remainder = line[email_end + 1..].trim();
-                if remainder.starts_with('-') {
-                    Some(remainder[1..].trim().to_string())
-                } else {
-                    None
-                }
+                line[email_end + 1..]
+                    .trim()
+                    .strip_prefix('-')
+                    .map(|role| role.trim().to_string())
             } else {
                 None
             };
@@ -277,26 +313,32 @@ fn parse_task(lines: &[&str]) -> Result<Option<Task>> {
 
     let mut task = Task::new(id, task_type, subject);
 
-    // Parse body and properties
+    // Properties form the final contiguous metadata block. Parsing a property-looking
+    // line in the middle of prose as metadata would silently truncate the body.
+    let mut property_end = lines.len();
+    while property_end > 1 && lines[property_end - 1].trim().is_empty() {
+        property_end -= 1;
+    }
+    let mut property_start = property_end;
+    while property_start > 1 && try_parse_property(lines[property_start - 1].trim()).is_some() {
+        property_start -= 1;
+    }
+
     let mut body_lines = Vec::new();
-    let mut in_body = true;
-
-    for line in &lines[1..] {
+    for line in &lines[1..property_start] {
         let trimmed = line.trim();
-
         if trimmed.is_empty() {
-            if in_body && !body_lines.is_empty() {
+            if !body_lines.is_empty() {
                 body_lines.push("");
             }
             continue;
         }
+        body_lines.push(trimmed);
+    }
 
-        // Check if this line is a property
-        if let Some((key, value)) = try_parse_property(trimmed) {
-            in_body = false;
+    for line in &lines[property_start..property_end] {
+        if let Some((key, value)) = try_parse_property(line.trim()) {
             task.add_property(key, value);
-        } else if in_body {
-            body_lines.push(trimmed);
         }
     }
 
@@ -342,6 +384,18 @@ mod tests {
     }
 
     #[test]
+    fn next_section_round_trips_before_tasks() {
+        let content = "# Test\n\n## Next\n\n- 2\n- 1\n\n## Tasks\n\n### Task 1 - First\n\nStatus: todo\n\n### Task 2 - Second\n\nStatus: todo\n";
+        let document = parse(content).unwrap();
+        assert_eq!(
+            document.next,
+            vec![TaskId::new(2).unwrap(), TaskId::new(1).unwrap()]
+        );
+        let reparsed = parse(&serialize(&document)).unwrap();
+        assert_eq!(reparsed.next, document.next);
+    }
+
+    #[test]
     fn test_parse_task_with_body() {
         let content = r#"# Test
 
@@ -372,6 +426,33 @@ Assigned To: John
         let task = doc.tasks.tasks().first().unwrap();
         assert_eq!(task.status(), Some("working"));
         assert_eq!(task.assignee(), Some("John"));
+    }
+
+    #[test]
+    fn report_labels_in_body_do_not_become_properties() {
+        let content = r#"# Test
+
+## Tasks
+
+### Investigation 114 - Preserve report body
+
+INVESTIGATION REPORT: evidence follows.
+
+CONTRACT 1: do not lose this paragraph.
+
+Status: investigations
+Assigned To: Ada
+"#;
+        let doc = parse(content).unwrap();
+        let task = doc.tasks.tasks().first().unwrap();
+        assert!(task
+            .body
+            .contains("INVESTIGATION REPORT: evidence follows."));
+        assert!(task
+            .body
+            .contains("CONTRACT 1: do not lose this paragraph."));
+        assert_eq!(task.status(), Some("investigations"));
+        assert_eq!(task.assignee(), Some("Ada"));
     }
 
     #[test]
@@ -510,7 +591,10 @@ Status: working
 "#;
         let doc = parse(content).unwrap();
         let task = doc.tasks.tasks().first().unwrap();
-        assert_eq!(task.subject, "Test with \"quotes\" and 'apostrophes' & symbols!");
+        assert_eq!(
+            task.subject,
+            "Test with \"quotes\" and 'apostrophes' & symbols!"
+        );
     }
 }
 
@@ -518,11 +602,6 @@ Status: working
 mod property_tests {
     use super::*;
     use proptest::prelude::*;
-
-    // Helper to generate valid property keys (capitalized, max 3 words)
-    fn property_key_strategy() -> impl Strategy<Value = String> {
-        prop::string::string_regex("[A-Z][a-z]{1,10}( [A-Z][a-z]{1,10}){0,2}").unwrap()
-    }
 
     // Helper to generate valid task IDs
     fn task_id_strategy() -> impl Strategy<Value = u32> {
@@ -545,7 +624,7 @@ mod property_tests {
                 let serialized = serialize(&doc);
                 if let Ok(doc2) = parse(&serialized) {
                     prop_assert_eq!(doc.tasks.len(), doc2.tasks.len());
-                    if doc.tasks.len() > 0 {
+                    if !doc.tasks.is_empty() {
                         prop_assert_eq!(
                             doc.tasks.tasks()[0].id.value(),
                             doc2.tasks.tasks()[0].id.value()
@@ -592,7 +671,7 @@ mod property_tests {
                 let serialized = serialize(&doc);
                 if let Ok(doc2) = parse(&serialized) {
                     prop_assert_eq!(doc.team.len(), doc2.team.len());
-                    if doc.team.len() > 0 {
+                    if !doc.team.is_empty() {
                         prop_assert_eq!(
                             &doc.team.members()[0].name,
                             &doc2.team.members()[0].name

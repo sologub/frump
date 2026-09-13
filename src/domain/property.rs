@@ -1,6 +1,19 @@
 use anyhow::{anyhow, Result};
 use std::fmt;
 
+pub const MAX_PROPERTY_VALUE_BYTES: usize = 40;
+
+/// Keep properties compact metadata. Narrative evidence belongs in the task body.
+pub fn validate_property_value(value: &str) -> Result<()> {
+    if value.len() > MAX_PROPERTY_VALUE_BYTES {
+        return Err(anyhow!(
+            "Property values cannot exceed {} bytes; put longer text in the task body.",
+            MAX_PROPERTY_VALUE_BYTES
+        ));
+    }
+    Ok(())
+}
+
 /// A task property with validated key
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Property {
@@ -22,7 +35,12 @@ impl PropertyKey {
     /// Create a new PropertyKey with validation
     pub fn new(key: &str) -> Result<Self> {
         // Must start with uppercase
-        if !key.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+        if !key
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false)
+        {
             return Err(anyhow!(
                 "Property key '{}' must start with uppercase letter",
                 key
@@ -131,5 +149,13 @@ mod tests {
     fn test_try_parse() {
         assert!(PropertyKey::try_parse("Status").is_some());
         assert!(PropertyKey::try_parse("status").is_none());
+    }
+
+    #[test]
+    fn property_value_limit_is_measured_in_bytes() {
+        assert!(validate_property_value(&"a".repeat(40)).is_ok());
+        assert!(validate_property_value(&"a".repeat(41)).is_err());
+        assert!(validate_property_value("éééééééééééééééééééé").is_ok());
+        assert!(validate_property_value("ééééééééééééééééééééé").is_err());
     }
 }

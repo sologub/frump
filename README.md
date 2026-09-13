@@ -2,6 +2,8 @@
 
 Distributed task management tool based on Git and Markdown. Manage tasks alongside your code with full version history.
 
+Frump automatically discovers `frump.md` from the current directory upward, so commands work from project subdirectories without an explicit file option.
+
 ## Why Frump?
 
 **Problem**: Traditional task management tools keep tasks separate from code, making it hard to see the full project picture from git history alone. Teams also lack truly distributed task collaboration.
@@ -69,6 +71,25 @@ frump set 1 Status working
 frump close 1
 git commit -am "Complete task 1"
 ```
+
+### Local Kanban board
+
+```bash
+frump web
+# Open http://127.0.0.1:3000
+```
+
+The board edits `frump.md` directly and refreshes when the file changes externally.
+
+### Authority workflow
+
+Frump supports `Depends On: 1, 2` task properties, validates active dependency graphs, and provides `deps`, `dependents`, and `ready` queries. Use `update --append-body` to preserve review and validation evidence in the durable task record; it adds a UTC timestamp and, when available, the Metateam crew member. `update --append-body-msg` additionally sends the raw appended fragment to all Metateam crew members after saving it. `Last Updated` is maintained automatically for every created or changed task. Properties are compact metadata limited to 40 bytes; place longer evidence in the body. Use `unset` to remove stale properties. `close` requires a `done` task whose active prerequisites are also done. Use `frump next 12 15` to activate an ordered todo plan: only its front task may leave `todo`, and a completed task is removed automatically. `frump list --property "Review=approved" --missing Evidence --sort last-updated --desc --format json` provides filtered machine-readable task data. Metateam is optional: when the `metateam` command is not on `PATH`, Frump saves the change and skips the notification instead of failing.
+
+Use `frump commit -m "short message"` to stage and commit only the task file; it never pushes.
+
+### Sharded storage
+
+Frump reads two board layouts. A single `frump.md` file keeps the whole board in one file, which suits small boards. A directory board keeps the shared `frump/general.md` and one Markdown file per task under `frump/tasks/`, so an edit rewrites only the file that changed instead of the entire board — the layout to use for a heavily edited board, where rewriting everything on every change is unnecessary write volume on the SSD. `frump migrate` converts a single file into the directory layout, and `--file frump` selects the migrated board.
 
 ## CLI Reference
 
@@ -267,6 +288,7 @@ frump resolve-conflicts --commit
 - **Bulk operations** for batch modifications
 - **Import/Export** (JSON and CSV formats)
 - **Conflict resolution** for merge scenarios
+- **Metateam integration**: task notifications and assignment announcements ([metateam.ai](https://metateam.ai))
 - **Property-based testing** with 60+ tests passing
 - **Comprehensive docs** (USAGE.md, TUTORIAL.md)
 

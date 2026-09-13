@@ -27,6 +27,8 @@ pub struct ExportTeamMember {
 pub struct ExportDoc {
     pub header: String,
     pub team: Vec<ExportTeamMember>,
+    #[serde(default)]
+    pub next: Vec<u32>,
     pub tasks: Vec<ExportTask>,
 }
 
@@ -63,6 +65,7 @@ impl From<&FrumpDoc> for ExportDoc {
         ExportDoc {
             header: doc.header.clone(),
             team,
+            next: doc.next.iter().map(|id| id.value()).collect(),
             tasks,
         }
     }
@@ -103,11 +106,18 @@ impl ExportDoc {
             })
             .collect();
 
-        Ok(FrumpDoc::new(
+        let mut doc = FrumpDoc::new(
             self.header.clone(),
             Team::new(team_members?),
             TaskCollection::new(tasks?),
-        ))
+        );
+        doc.next = self
+            .next
+            .iter()
+            .map(|id| TaskId::new(*id))
+            .collect::<Result<_>>()?;
+        doc.validate_next()?;
+        Ok(doc)
     }
 }
 

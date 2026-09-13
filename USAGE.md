@@ -23,6 +23,100 @@ cargo build --release
 # Binary will be at target/release/frump
 ```
 
+Frump automatically finds `frump.md` in the current directory or a parent directory. Use `--file` only to select a different board.
+
+## Sharded board layout and migration
+
+Frump can store each task in its own Markdown file. Convert a single-file board with `frump migrate`; a successful migration replaces `frump.md` with the `frump/` directory. The command stages and verifies the new board before publishing it, and refuses an existing destination.
+
+```text
+frump/
+  general.md
+  tasks/
+    1.md
+    2.md
+```
+
+`general.md` contains the project header and Team section. Each task file contains exactly one normal task heading, body, and properties. When invoked with `--file frump`, Frump writes only changed task files rather than rewriting the full board. Existing `frump.md` boards retain their current behavior.
+
+```bash
+frump --file frump.md migrate
+frump --file frump list
+```
+
+## Web board
+
+Start a local Kanban editor for `frump.md`:
+
+```bash
+frump web
+# Open http://127.0.0.1:3000
+
+# Use a different task file or port
+frump web --file project-tasks.md --port 4000
+```
+
+The board edits the Markdown file directly and refreshes automatically when another tool modifies it.
+
+## Authority workflow
+
+```bash
+# Declare comma-separated prerequisites in the existing Markdown property format
+frump set 12 "Depends On" "3, 7"
+frump validate                 # rejects unknown and cyclic active dependencies
+frump deps 12                  # show the prerequisite tree
+frump dependents 7             # show active consumers of task 7
+frump ready                    # show unfinished tasks with no active prerequisites
+
+# Append durable task evidence without overwriting the existing body
+frump update 12 --append-body "Review rejected: reason and next proof"
+frump unset 12 Status
+```
+
+`frump close` requires `Status: done` and every active prerequisite to be done. A new status remains allowed, but emits a warning so project vocabulary does not drift accidentally. `frump add` warns when similar existing tasks are found but still creates the task.
+
+Frump automatically maintains `Last Updated` whenever it creates or changes a task. Property values are compact metadata and may be at most 40 bytes; put longer evidence, reports, and rationale in the body. `--append-body` adds a dated Markdown update and, when invoked by a Metateam crew member, records that member's name. `--append-body-msg` does the same, then sends the raw appended fragment with `metateam crew message all`. Normal web Save deliberately replaces the body with exactly the text in the editor.
+
+Initialize a new board explicitly:
+
+```bash
+frump init --file frump.md --title "My Project"
+```
+
+Commit only the task file with a short message:
+
+```bash
+frump commit -m "Record completed validation"
+```
+
+Group the columns by `Status` or by any other property in the file, filter with
+the search box or the type picker, reorder and collapse columns, and switch
+sort, density or theme from the toolbar. Layout choices, the search text and the scroll
+positions are stored per board in the browser, never in the Markdown file, so a
+reload returns to the same view. The open task and the notify panel are part of
+the URL: reloading reopens them together with any unsaved draft, and Back steps
+out. Saving keeps the task open; the close button reads Cancel when there are
+unsaved changes and Close when there are none, and leaving without deciding
+keeps the work for when the task is reopened. Keyboard: `/` search, `n` new task,
+`Alt` plus arrow keys to move the focused card, `Escape` to close the dialog.
+
+Task bodies render as Markdown on the cards, and the body field continues lists
+and quotes as you type, renumbers ordered lists, indents with Tab, wraps the
+selection with Ctrl+B, Ctrl+I and Ctrl+K, and saves with Ctrl+Enter. Status,
+type and property values are offered as dropdowns built from the values already
+used in the file, and still accept new values. Clicking a card opens it beside the board,
+under the toolbar; the divider resizes the panel by drag or arrow keys and a
+double click resets it, and a header button switches to full screen and back. Sorting includes `Last
+updated`, newest first, from the `Last Updated` property; tasks without one sort
+last. The board refreshes in place — unchanged cards keep their scroll
+position and focus, changed cards flash — and a refresh never interrupts a drag.
+
+Editing is safe against concurrent writes: an external change never discards an
+open draft, it raises a conflict notice in the task view offering reload or
+keep, and a task deleted underneath an edit can be saved as a new task. The
+notify control on a card or in the task view sends a message about that task to
+a crew member through Metateam.
+
 ## Getting Started
 
 Frump works with a `frump.md` file in your project directory. This file contains:
@@ -81,6 +175,14 @@ frump list -a "Jane Smith"
 
 # Combine filters
 frump list -t Bug -s open -a "Jane Smith"
+
+# Filter authority metadata, find missing values, and sort
+frump list --property "Evidence Kind=test" --missing Review
+frump list --sort last-updated --desc
+frump list --sort "Depends On"
+
+# Machine-readable filtered results
+frump list --status todo --format json
 ```
 
 **Example output:**
@@ -149,6 +251,8 @@ frump add -t Feature "Add export feature" \
 - Checks git history to avoid ID conflicts
 - Assigns to the first team member if no assignee is specified
 
+Whenever a task receives a new `Assigned To` value, Frump saves the board first and then announces `<type> <id> is assigned to <assignee>.` to all Metateam crew members as `frump`. Metateam is optional: when the `metateam` command is not on `PATH`, the announcement is skipped and the assignment still succeeds.
+
 ## Task Management
 
 ### close - Close a task
@@ -185,7 +289,7 @@ frump assign 7 "Jane Smith"
 
 ### set - Set a property
 
-Set or update any property on a task.
+Set or update any property on a task. Property values are limited to 40 bytes; use the task body for longer text.
 
 ```bash
 frump set <task_id> <property_name> <value>
@@ -221,11 +325,34 @@ frump update <task_id> --subject "New subject text"
 # Update body only
 frump update <task_id> --body "New detailed description"
 
+# Clear a body deliberately; an empty --body value is refused
+frump update <task_id> --clear-body
+
 # Update both
 frump update <task_id> \
   --subject "Updated title" \
   --body "Updated description"
+
+# Append dated evidence without replacing the existing body
+frump update <task_id> --append-body "Validation passed after rebuild"
+
+# Append dated evidence and notify the active Metateam crew
+frump update <task_id> --append-body-msg "Validation passed after rebuild"
 ```
+
+### next - Manage the ordered todo plan
+
+`## Next` stores the ordered IDs permitted to leave `todo`. With IDs, `next` replaces the plan; with no IDs, it prints the current order; `--clear` removes the whole plan. An empty plan preserves the existing unrestricted workflow; once populated, a `todo` task that is not first cannot move to another status. Moving a task to `done` automatically removes it from the plan.
+
+```bash
+frump next 12 15 18
+frump next
+frump next --clear
+frump set 12 Status working
+frump set 12 Status done
+```
+
+`--body` replaces the body exactly and refuses empty or whitespace-only values, so an accidental empty shell expansion cannot erase the record. Use `--clear-body` for an intentional removal. `--append-body` creates a dated Markdown update and adds the current Metateam crew member when that identity is available. `--append-body-msg` additionally sends the raw fragment to all Metateam crew members after saving the task; when the `metateam` command is not on `PATH`, the update is saved and the message is skipped.
 
 **Example:**
 ```bash

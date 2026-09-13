@@ -1,15 +1,30 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
 
-use frump::{export_csv, export_json, import_json, parser, ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskType, TaskTemplate, TemplateManager};
+use frump::{
+    announce_assignment, append_update, export_csv, export_json, import_json, mark_updated,
+    now_utc, send_metateam_message, storage, validate_property_value, ChangeType, FrumpRepo,
+    PropertyKey, Task, TaskId, TaskTemplate, TaskType, TemplateManager, LAST_UPDATED_PROPERTY,
+};
+use serde::Serialize;
 
 #[derive(Parser)]
 #[command(name = "frump")]
 #[command(about = "Distributed task management tool based on Git and Markdown", long_about = None)]
+#[command(
+    after_help = "AI agents: run `frump usage` for the complete usage guide.\nBuild from source with `cargo build --release`."
+)]
 struct Cli {
-    #[arg(short, long, default_value = "frump.md")]
+    #[arg(
+        short,
+        long,
+        global = true,
+        default_value = ".",
+        hide_default_value = true
+    )]
     file: PathBuf,
 
     #[command(subcommand)]
@@ -18,6 +33,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Print the complete usage guide (USAGE.md)
+    Usage,
+
+    /// Start a local Kanban board for the task file
+    Web {
+        /// TCP port for the loopback-only web server
+        #[arg(long, default_value_t = 3000)]
+        port: u16,
+    },
+
+    /// Commit the tracked task file with a short Git message
+    Commit {
+        /// Commit message
+        #[arg(short, long, default_value = "Update frump tasks")]
+        message: String,
+    },
+
     /// List all tasks
     List {
         /// Filter by task type
@@ -31,6 +63,43 @@ enum Commands {
         /// Filter by assignee
         #[arg(short = 'a', long)]
         assignee: Option<String>,
+
+        /// Require an exact property key and value, for example `Review=approved`
+        #[arg(long, value_name = "KEY=VALUE")]
+        property: Option<String>,
+
+        /// Require that a property key is absent
+        #[arg(long, value_name = "KEY")]
+        missing: Option<String>,
+
+        /// Sort by id, status, assignee, last-updated, or a property name
+        #[arg(long)]
+        sort: Option<String>,
+
+        /// Reverse the selected sort order
+        #[arg(long, requires = "sort")]
+        desc: bool,
+
+        /// Emit a JSON array of matching tasks
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+
+    /// Replace a single Markdown board with a verified sharded board
+    Migrate {
+        /// Destination directory (defaults to the source filename without .md)
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Show the ordered task IDs allowed to leave todo, or replace the list
+    Next {
+        /// Replace the current ordered list with these task IDs; omit IDs to show it
+        ids: Vec<u32>,
+
+        /// Remove every task from the ordered plan
+        #[arg(long, conflicts_with = "ids")]
+        clear: bool,
     },
 
     /// Show details of a specific task
@@ -88,6 +157,9 @@ enum Commands {
         value: String,
     },
 
+    /// Remove a property from a task, including Status
+    Unset { id: u32, property: String },
+
     /// Show the history of a task
     History {
         /// Task ID
@@ -106,9 +178,21 @@ enum Commands {
         #[arg(long)]
         subject: Option<String>,
 
-        /// New body (optional)
-        #[arg(long)]
+        /// Replacement body (optional)
+        #[arg(long, conflicts_with = "clear_body")]
         body: Option<String>,
+
+        /// Explicitly remove the current body
+        #[arg(long, conflicts_with_all = ["append_body", "append_body_msg"])]
+        clear_body: bool,
+
+        /// Append text to the task body instead of replacing it
+        #[arg(long, conflicts_with_all = ["body", "clear_body"])]
+        append_body: Option<String>,
+
+        /// Append text to the task body and notify every Metateam crew member
+        #[arg(long, conflicts_with_all = ["body", "clear_body", "append_body"])]
+        append_body_msg: Option<String>,
     },
 
     /// Search tasks by keyword
@@ -126,6 +210,21 @@ enum Commands {
 
     /// Validate frump.md file
     Validate,
+
+    /// Create a new empty Frump board
+    Init {
+        #[arg(long, default_value = "My Project")]
+        title: String,
+    },
+
+    /// Show the dependency tree for a task
+    Deps { id: u32 },
+
+    /// List active tasks that depend on a task
+    Dependents { id: u32 },
+
+    /// List tasks whose active dependencies are satisfied
+    Ready,
 
     /// Export tasks to JSON or CSV
     Export {
@@ -236,17 +335,61 @@ enum BulkAction {
     },
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut cli = Cli::parse();
+    if cli.file == Path::new(".") {
+        cli.file = if matches!(cli.command, Commands::Init { .. }) {
+            PathBuf::from("frump.md")
+        } else {
+            discover_task_file()?
+        };
+    }
+    let _write_lock = if cli.file.exists()
+        && matches!(
+            cli.command,
+            Commands::Add { .. }
+                | Commands::Close { .. }
+                | Commands::Assign { .. }
+                | Commands::Set { .. }
+                | Commands::Unset { .. }
+                | Commands::Update { .. }
+                | Commands::Import { .. }
+                | Commands::Bulk { .. }
+                | Commands::ResolveConflicts { .. }
+                | Commands::Migrate { .. }
+                | Commands::Next { .. }
+        ) {
+        Some(acquire_write_lock(&cli.file)?)
+    } else {
+        None
+    };
 
     match &cli.command {
+        Commands::Usage => {
+            print!("{}", include_str!("../USAGE.md"));
+        }
+
+        Commands::Web { port } => {
+            frump::web::serve(cli.file.clone(), *port).await?;
+        }
+
+        Commands::Commit { message } => {
+            commit_task_file(&cli.file, message)?;
+            println!("Committed {}", cli.file.display());
+        }
+
         Commands::List {
             task_type,
             status,
             assignee,
+            property,
+            missing,
+            sort,
+            desc,
+            format,
         } => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let doc = parser::parse(&content)?;
+            let doc = read_document(&cli.file)?;
 
             let mut tasks = doc.tasks.tasks().to_vec();
 
@@ -264,6 +407,28 @@ fn main() -> Result<()> {
                 tasks.retain(|t| t.assignee().map(|name| name == a).unwrap_or(false));
             }
 
+            if let Some(filter) = property {
+                let (key, value) = parse_property_filter(filter)?;
+                tasks.retain(|task| task.get_property(&key) == Some(value.as_str()));
+            }
+            if let Some(key) = missing {
+                let key = PropertyKey::new(key)?;
+                tasks.retain(|task| task.get_property(&key).is_none());
+            }
+            if let Some(key) = sort {
+                sort_tasks(&mut tasks, key, *desc)?;
+            }
+
+            if format == "json" {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &tasks.iter().map(ListTask::from).collect::<Vec<_>>()
+                    )?
+                );
+                return Ok(());
+            }
+
             if tasks.is_empty() {
                 println!("No tasks found.");
             } else {
@@ -279,9 +444,50 @@ fn main() -> Result<()> {
             }
         }
 
+        Commands::Migrate { output } => {
+            let destination = output
+                .clone()
+                .unwrap_or_else(|| default_migration_destination(&cli.file));
+            storage::migrate_single_file(&cli.file, &destination)?;
+            println!(
+                "Migrated {} to {}. The source file has been replaced.",
+                cli.file.display(),
+                destination.display()
+            );
+        }
+
+        Commands::Next { ids, clear } => {
+            let mut doc = read_document(&cli.file)?;
+            if *clear {
+                doc.next.clear();
+                storage::write(&cli.file, &doc)?;
+                println!("Cleared next tasks.");
+            } else if ids.is_empty() {
+                if doc.next.is_empty() {
+                    println!("No next tasks planned.");
+                } else {
+                    for id in &doc.next {
+                        println!("{}", id);
+                    }
+                }
+            } else {
+                let next: Result<Vec<_>, _> = ids.iter().map(|id| TaskId::new(*id)).collect();
+                doc.next = next?;
+                doc.validate_next()?;
+                storage::write(&cli.file, &doc)?;
+                println!(
+                    "Set next tasks: {}",
+                    doc.next
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
+
         Commands::Show { id } => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let doc = parser::parse(&content)?;
+            let doc = read_document(&cli.file)?;
 
             let task_id = TaskId::new(*id)?;
             if let Some(task) = doc.tasks.find_by_id(task_id) {
@@ -297,7 +503,7 @@ fn main() -> Result<()> {
                     }
                 }
             } else {
-                println!("Task {} not found.", id);
+                anyhow::bail!("Task {} not found.", id);
             }
         }
 
@@ -308,8 +514,26 @@ fn main() -> Result<()> {
             assignee,
             status,
         } => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let mut doc = parser::parse(&content)?;
+            let mut doc = read_document(&cli.file)?;
+
+            let query = normalize_search_text(subject);
+            let candidates: Vec<_> = doc
+                .tasks
+                .tasks()
+                .iter()
+                .filter(|task| {
+                    all_query_tokens_match(&query, &task.subject, &task.body)
+                        && search_similarity(&query, &task.subject)
+                            .max(search_similarity(&query, &task.body))
+                            >= 0.78
+                })
+                .collect();
+            if !candidates.is_empty() {
+                eprintln!("Warning: similar task(s) already exist:");
+                for task in candidates {
+                    eprintln!("  {} {} - {}", task.task_type, task.id, task.subject);
+                }
+            }
 
             // Find the next available task ID, considering git history
             let next_id = if let Ok(repo) = FrumpRepo::open(".") {
@@ -332,65 +556,84 @@ fn main() -> Result<()> {
                 doc.tasks.next_id()
             };
 
-            let mut new_task = Task::new(
-                next_id,
-                TaskType::parse(task_type),
-                subject.clone(),
-            );
+            let mut new_task = Task::new(next_id, TaskType::parse(task_type), subject.clone());
 
             if let Some(b) = body {
                 new_task.set_body(b.clone());
             }
 
             if let Some(a) = assignee {
+                validate_property_value(a)?;
                 new_task.set_assignee(a.clone());
             } else if let Some(default) = doc.team.default_assignee() {
+                validate_property_value(&default.name)?;
                 new_task.set_assignee(default.name.clone());
             }
 
             if let Some(s) = status {
+                validate_property_value(s)?;
+                warn_if_new_status(&doc, s);
                 new_task.set_status(s.clone());
             }
+            touch_task(&mut new_task);
+
+            let assignment = new_task.assignee().map(str::to_string);
+            let assignment_task = new_task.clone();
 
             doc.tasks.add(new_task);
 
             // Write back to file
-            let new_content = parser::serialize(&doc);
-            fs::write(&cli.file, new_content).context("Failed to write frump.md file")?;
+            storage::write(&cli.file, &doc)?;
+
+            if let Some(assignee) = assignment {
+                print_assignment_announcement(&assignment_task, &assignee)?;
+            }
 
             println!("Added {} {} - {}", task_type, next_id, subject);
         }
 
         Commands::Close { id } => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let mut doc = parser::parse(&content)?;
+            let mut doc = read_document(&cli.file)?;
 
             let task_id = TaskId::new(*id)?;
-            if let Some(task) = doc.tasks.remove(task_id) {
-                let new_content = parser::serialize(&doc);
-                fs::write(&cli.file, new_content).context("Failed to write frump.md file")?;
+            if doc.tasks.find_by_id(task_id).is_some() {
+                ensure_close_is_recoverable(&cli.file, task_id)?;
+                let dependency_errors = validate_dependencies(&doc);
+                if !dependency_errors.is_empty() {
+                    anyhow::bail!("Refusing to close: {}", dependency_errors.join("; "));
+                }
+                ensure_close_ready(&doc, task_id)?;
+                let task = doc.tasks.remove(task_id).expect("task checked above");
+                doc.remove_from_next(task_id);
+                storage::write(&cli.file, &doc)?;
 
                 println!("Closed {} {} - {}", task.task_type, task.id, task.subject);
                 println!("\nRemember to commit this change with a descriptive message.");
             } else {
-                println!("Task {} not found.", id);
+                anyhow::bail!("Task {} not found.", id);
             }
         }
 
         Commands::Assign { id, assignee } => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let mut doc = parser::parse(&content)?;
+            validate_property_value(assignee)?;
+            let mut doc = read_document(&cli.file)?;
 
             let task_id = TaskId::new(*id)?;
             if let Some(task) = doc.tasks.find_by_id_mut(task_id) {
+                let changed = task.assignee() != Some(assignee.as_str());
                 task.set_assignee(assignee.clone());
+                touch_task(task);
+                let assigned_task = changed.then(|| task.clone());
 
-                let new_content = parser::serialize(&doc);
-                fs::write(&cli.file, new_content).context("Failed to write frump.md file")?;
+                storage::write(&cli.file, &doc)?;
+
+                if let Some(task) = assigned_task {
+                    print_assignment_announcement(&task, assignee)?;
+                }
 
                 println!("Assigned task {} to {}", id, assignee);
             } else {
-                println!("Task {} not found.", id);
+                anyhow::bail!("Task {} not found.", id);
             }
         }
 
@@ -399,26 +642,79 @@ fn main() -> Result<()> {
             property,
             value,
         } => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let mut doc = parser::parse(&content)?;
+            let mut doc = read_document(&cli.file)?;
 
             let task_id = TaskId::new(*id)?;
             let prop_key = PropertyKey::new(property)?;
+            validate_property_value(value)?;
 
-            if let Some(task) = doc.tasks.find_by_id_mut(task_id) {
-                task.set_property(prop_key, value.clone());
-
-                let new_content = parser::serialize(&doc);
-                fs::write(&cli.file, new_content).context("Failed to write frump.md file")?;
-
-                println!("Set {} = {} on task {}", property, value, id);
-            } else {
-                println!("Task {} not found.", id);
+            if property == LAST_UPDATED_PROPERTY {
+                anyhow::bail!(
+                    "{} is managed automatically and cannot be set directly.",
+                    LAST_UPDATED_PROPERTY
+                );
             }
+
+            if property == "Status" {
+                warn_if_new_status(&doc, value);
+                doc.ensure_next_transition(task_id, Some(value))?;
+            }
+
+            let completed = property == "Status" && value == "done";
+            let mut assigned_task = None;
+            if let Some(task) = doc.tasks.find_by_id_mut(task_id) {
+                let assignment_changed =
+                    property == "Assigned To" && task.assignee() != Some(value.as_str());
+                task.set_property(prop_key, value.clone());
+                touch_task(task);
+                if assignment_changed {
+                    assigned_task = Some(task.clone());
+                }
+            } else {
+                anyhow::bail!("Task {} not found.", id);
+            }
+            if completed {
+                doc.remove_from_next(task_id);
+            }
+            storage::write(&cli.file, &doc)?;
+            if let Some(task) = assigned_task {
+                print_assignment_announcement(&task, value)?;
+            }
+            println!("Set {} = {} on task {}", property, value, id);
+        }
+
+        Commands::Unset { id, property } => {
+            let mut doc = read_document(&cli.file)?;
+            let key = PropertyKey::new(property)?;
+            if property == LAST_UPDATED_PROPERTY {
+                anyhow::bail!(
+                    "{} is managed automatically and cannot be removed.",
+                    LAST_UPDATED_PROPERTY
+                );
+            }
+            let task_id = TaskId::new(*id)?;
+            if property == "Status" {
+                doc.ensure_next_transition(task_id, None)?;
+            }
+            let task = doc
+                .tasks
+                .find_by_id_mut(task_id)
+                .ok_or_else(|| anyhow::anyhow!("Task {} not found.", id))?;
+            if task.get_property(&key).is_none() {
+                anyhow::bail!("Task {} has no {} property.", id, property);
+            }
+            task.remove_property(&key);
+            touch_task(task);
+            storage::write(&cli.file, &doc)?;
+            println!("Removed {} from task {}", property, id);
         }
 
         Commands::History { id } => {
-            let repo = FrumpRepo::open(".").context("Not in a git repository")?;
+            let repo = FrumpRepo::open(".").map_err(|_| {
+                anyhow::anyhow!(
+                    "Task history requires a Git repository containing tracked frump.md history."
+                )
+            })?;
             let task_id = TaskId::new(*id)?;
             let history = repo.task_history(task_id)?;
 
@@ -433,7 +729,12 @@ fn main() -> Result<()> {
                         ChangeType::Deleted => "✗ Deleted",
                     };
 
-                    println!("{} by {} on {}", change_icon, commit.author, commit.date.format("%Y-%m-%d %H:%M"));
+                    println!(
+                        "{} by {} on {}",
+                        change_icon,
+                        commit.author,
+                        commit.date.format("%Y-%m-%d %H:%M")
+                    );
                     println!("  Commit: {}", &commit.hash[..8]);
                     if !commit.message.is_empty() {
                         // Show first line of commit message
@@ -460,14 +761,31 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Update { id, subject, body } => {
-            if subject.is_none() && body.is_none() {
-                println!("Error: At least one of --subject or --body must be provided");
+        Commands::Update {
+            id,
+            subject,
+            body,
+            clear_body,
+            append_body,
+            append_body_msg,
+        } => {
+            if subject.is_none()
+                && body.is_none()
+                && !clear_body
+                && append_body.is_none()
+                && append_body_msg.is_none()
+            {
+                println!("Error: provide --subject, --body, --clear-body, or an append option");
                 return Ok(());
             }
+            if body
+                .as_ref()
+                .is_some_and(|new_body| new_body.trim().is_empty())
+            {
+                anyhow::bail!("Body cannot be empty; use --clear-body to remove it explicitly.");
+            }
 
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let mut doc = parser::parse(&content)?;
+            let mut doc = read_document(&cli.file)?;
 
             let task_id = TaskId::new(*id)?;
             if let Some(task) = doc.tasks.find_by_id_mut(task_id) {
@@ -477,47 +795,75 @@ fn main() -> Result<()> {
                 }
                 if let Some(new_body) = body {
                     task.set_body(new_body.clone());
-                    println!("Updated body for task {}", id);
+                    println!("Replaced body for task {}", id);
+                }
+                if *clear_body {
+                    task.set_body(String::new());
+                    println!("Cleared body for task {}", id);
+                }
+                if let Some(extra) = append_body {
+                    append_update(task, extra, current_crew_agent().as_deref())?;
+                    println!("Appended body for task {}", id);
+                } else if let Some(extra) = append_body_msg {
+                    append_update(task, extra, current_crew_agent().as_deref())?;
+                    println!("Appended body for task {}", id);
+                } else {
+                    touch_task(task);
                 }
 
-                let new_content = parser::serialize(&doc);
-                fs::write(&cli.file, new_content).context("Failed to write frump.md file")?;
+                storage::write(&cli.file, &doc)?;
+                if let Some(message) = append_body_msg {
+                    if let Some(output) =
+                        send_metateam_message(&["crew", "message", "all", message], "send message")?
+                    {
+                        println!("Messaged with metateam: {output}");
+                    }
+                }
             } else {
-                println!("Task {} not found.", id);
+                anyhow::bail!("Task {} not found.", id);
             }
         }
 
         Commands::Search { query, full } => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let doc = parser::parse(&content)?;
+            let doc = read_document(&cli.file)?;
 
-            let query_lower = query.to_lowercase();
+            let normalized_query = normalize_search_text(query);
             let mut found = Vec::new();
 
             for task in doc.tasks.tasks() {
-                let mut matches = false;
-
-                // Search in subject
-                if task.subject.to_lowercase().contains(&query_lower) {
-                    matches = true;
+                if !all_query_tokens_match(&normalized_query, &task.subject, &task.body) {
+                    continue;
                 }
-
-                // Search in body if --full flag is set
-                if *full && task.body.to_lowercase().contains(&query_lower) {
-                    matches = true;
-                }
-
-                if matches {
-                    found.push(task);
+                let subject_score = search_similarity(&normalized_query, &task.subject);
+                let body_score = search_similarity(&normalized_query, &task.body);
+                let score = subject_score.max(body_score);
+                if score >= 0.78 {
+                    found.push((task, score, subject_score >= body_score));
                 }
             }
+
+            found.sort_by(|left, right| {
+                right
+                    .1
+                    .total_cmp(&left.1)
+                    .then_with(|| right.2.cmp(&left.2))
+            });
 
             if found.is_empty() {
                 println!("No tasks found matching '{}'", query);
             } else {
-                println!("Found {} task(s) matching '{}':\n", found.len(), query);
-                for task in found {
+                println!(
+                    "Found {} similar task(s) matching '{}':\n",
+                    found.len(),
+                    query
+                );
+                for (task, score, subject_match) in found {
                     println!("{} {} - {}", task.task_type, task.id, task.subject);
+                    println!(
+                        "  Similarity: {:.0}% ({})",
+                        score * 100.0,
+                        if subject_match { "subject" } else { "body" }
+                    );
                     if *full && !task.body.is_empty() {
                         // Show a snippet of the body
                         let snippet = task.body.lines().take(2).collect::<Vec<_>>().join(" ");
@@ -533,8 +879,7 @@ fn main() -> Result<()> {
         }
 
         Commands::Stats => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let doc = parser::parse(&content)?;
+            let doc = read_document(&cli.file)?;
 
             let total = doc.tasks.len();
 
@@ -609,9 +954,7 @@ fn main() -> Result<()> {
         }
 
         Commands::Validate => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-
-            match parser::parse(&content) {
+            match read_document(&cli.file) {
                 Ok(doc) => {
                     println!("✓ File structure is valid");
 
@@ -630,8 +973,19 @@ fn main() -> Result<()> {
                         println!("✓ All task IDs are unique");
                     }
 
+                    let dependency_errors = validate_dependencies(&doc);
+                    if dependency_errors.is_empty() {
+                        println!("✓ Dependencies resolve and are acyclic");
+                    } else {
+                        for error in dependency_errors {
+                            println!("✗ {}", error);
+                        }
+                        anyhow::bail!("Dependency validation failed");
+                    }
+
                     // Check for sequential IDs
-                    let mut ids_vec: Vec<_> = doc.tasks.tasks().iter().map(|t| t.id.value()).collect();
+                    let mut ids_vec: Vec<_> =
+                        doc.tasks.tasks().iter().map(|t| t.id.value()).collect();
                     ids_vec.sort();
                     let mut gaps = Vec::new();
                     for i in 1..ids_vec.len() {
@@ -656,9 +1010,11 @@ fn main() -> Result<()> {
                     // Validate team emails
                     // Email is already validated by the Email type during parsing
 
-                    println!("\n✓ Validation complete: {} tasks, {} team members",
-                             doc.tasks.len(),
-                             doc.team.len());
+                    println!(
+                        "\n✓ Validation complete: {} tasks, {} team members",
+                        doc.tasks.len(),
+                        doc.team.len()
+                    );
                 }
                 Err(e) => {
                     println!("✗ Validation failed: {}", e);
@@ -666,22 +1022,73 @@ fn main() -> Result<()> {
             }
         }
 
+        Commands::Init { title } => {
+            if cli.file.exists() {
+                anyhow::bail!(
+                    "{} already exists; refusing to overwrite it.",
+                    cli.file.display()
+                );
+            }
+            fs::write(&cli.file, format!("# {}\n\n## Team\n\n## Tasks\n", title))
+                .with_context(|| format!("Failed to initialize {}", cli.file.display()))?;
+            println!("Initialized {}", cli.file.display());
+        }
+
+        Commands::Deps { id } => {
+            let doc = read_document(&cli.file)?;
+            print_dependency_tree(
+                &doc,
+                TaskId::new(*id)?,
+                0,
+                &mut std::collections::HashSet::new(),
+            )?;
+        }
+
+        Commands::Dependents { id } => {
+            let doc = read_document(&cli.file)?;
+            let id = TaskId::new(*id)?;
+            for task in doc
+                .tasks
+                .tasks()
+                .iter()
+                .filter(|task| dependency_ids(task).contains(&id))
+            {
+                println!("{} {} - {}", task.task_type, task.id, task.subject);
+            }
+        }
+
+        Commands::Ready => {
+            let doc = read_document(&cli.file)?;
+            for task in doc.tasks.tasks().iter().filter(|task| {
+                task.status() != Some("done")
+                    && dependency_ids(task).iter().all(|dependency| {
+                        doc.tasks
+                            .find_by_id(*dependency)
+                            .map(|prerequisite| prerequisite.status() == Some("done"))
+                            .unwrap_or(true)
+                    })
+            }) {
+                println!("{} {} - {}", task.task_type, task.id, task.subject);
+            }
+        }
+
         Commands::Export { format, output } => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let doc = parser::parse(&content)?;
+            let doc = read_document(&cli.file)?;
 
             let exported = match format.to_lowercase().as_str() {
                 "json" => export_json(&doc)?,
                 "csv" => export_csv(&doc)?,
                 _ => {
-                    println!("Error: Unknown format '{}'. Supported formats: json, csv", format);
+                    println!(
+                        "Error: Unknown format '{}'. Supported formats: json, csv",
+                        format
+                    );
                     return Ok(());
                 }
             };
 
             if let Some(output_path) = output {
-                fs::write(output_path, &exported)
-                    .context("Failed to write output file")?;
+                fs::write(output_path, &exported).context("Failed to write output file")?;
                 println!("Exported {} tasks to {:?}", doc.tasks.len(), output_path);
             } else {
                 println!("{}", exported);
@@ -689,56 +1096,64 @@ fn main() -> Result<()> {
         }
 
         Commands::Import { file, merge } => {
-            let import_content = fs::read_to_string(file)
-                .context("Failed to read import file")?;
+            let import_content = fs::read_to_string(file).context("Failed to read import file")?;
 
             let imported_doc = import_json(&import_content)?;
 
             if *merge {
                 // Merge: add imported tasks to existing document
-                let current_content = fs::read_to_string(&cli.file)
-                    .context("Failed to read current frump.md")?;
-                let mut current_doc = parser::parse(&current_content)?;
+                let mut current_doc = read_document(&cli.file)?;
 
                 // Find next available ID
-                let mut next_id = current_doc.tasks.max_id()
+                let first_id = current_doc
+                    .tasks
+                    .max_id()
                     .map(|id| id.value() + 1)
                     .unwrap_or(1);
 
                 // Add imported tasks with new IDs
                 let mut added = 0;
-                for task in imported_doc.tasks.tasks() {
-                    let new_id = TaskId::new(next_id)?;
-                    let mut new_task = Task::new(
-                        new_id,
-                        task.task_type.clone(),
-                        task.subject.clone(),
-                    );
+                let mut announcements = Vec::new();
+                for (offset, task) in imported_doc.tasks.tasks().iter().enumerate() {
+                    let new_id = TaskId::new(first_id + offset as u32)?;
+                    let mut new_task =
+                        Task::new(new_id, task.task_type.clone(), task.subject.clone());
                     new_task.set_body(task.body.clone());
 
                     for prop in &task.properties {
+                        validate_property_value(&prop.value)?;
                         new_task.add_property(prop.key.clone(), prop.value.clone());
+                    }
+                    touch_task(&mut new_task);
+
+                    if let Some(assignee) = new_task.assignee().map(str::to_string) {
+                        announcements.push((new_task.clone(), assignee));
                     }
 
                     current_doc.tasks.add(new_task);
-                    next_id += 1;
                     added += 1;
                 }
 
-                let new_content = parser::serialize(&current_doc);
-                fs::write(&cli.file, new_content)
-                    .context("Failed to write frump.md")?;
+                storage::write(&cli.file, &current_doc)?;
+                for (task, assignee) in announcements {
+                    print_assignment_announcement(&task, &assignee)?;
+                }
 
                 println!("Merged {} tasks into frump.md", added);
             } else {
                 // Replace: overwrite with imported document
-                let new_content = parser::serialize(&imported_doc);
-                fs::write(&cli.file, new_content)
-                    .context("Failed to write frump.md")?;
+                storage::write(&cli.file, &imported_doc)?;
+                for task in imported_doc.tasks.tasks() {
+                    if let Some(assignee) = task.assignee() {
+                        print_assignment_announcement(task, assignee)?;
+                    }
+                }
 
-                println!("Imported {} tasks, {} team members",
-                         imported_doc.tasks.len(),
-                         imported_doc.team.len());
+                println!(
+                    "Imported {} tasks, {} team members",
+                    imported_doc.tasks.len(),
+                    imported_doc.team.len()
+                );
             }
         }
 
@@ -746,7 +1161,12 @@ fn main() -> Result<()> {
             let manager = TemplateManager::new();
 
             match action {
-                TemplateAction::Add { name, task_type, subject, body } => {
+                TemplateAction::Add {
+                    name,
+                    task_type,
+                    subject,
+                    body,
+                } => {
                     let template = TaskTemplate {
                         name: name.clone(),
                         task_type: task_type.clone(),
@@ -801,8 +1221,7 @@ fn main() -> Result<()> {
         }
 
         Commands::Bulk { action } => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let mut doc = parser::parse(&content)?;
+            let mut doc = read_document(&cli.file)?;
 
             match action {
                 BulkAction::CloseByStatus { status } => {
@@ -822,21 +1241,31 @@ fn main() -> Result<()> {
                     let count = tasks_to_close.len();
                     for id in tasks_to_close {
                         doc.tasks.remove(id);
+                        doc.remove_from_next(id);
                     }
 
-                    let new_content = parser::serialize(&doc);
-                    fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
+                    storage::write(&cli.file, &doc)?;
 
                     println!("Closed {} task(s) with status '{}'", count, status);
                 }
 
-                BulkAction::AssignByType { task_type, assignee } => {
+                BulkAction::AssignByType {
+                    task_type,
+                    assignee,
+                } => {
+                    validate_property_value(assignee)?;
                     let filter_type = TaskType::parse(task_type);
                     let mut count = 0;
+                    let mut announcements = Vec::new();
 
                     for task in doc.tasks.tasks_mut() {
                         if task.task_type == filter_type {
+                            let changed = task.assignee() != Some(assignee.as_str());
                             task.set_assignee(assignee.clone());
+                            touch_task(task);
+                            if changed {
+                                announcements.push(task.clone());
+                            }
                             count += 1;
                         }
                     }
@@ -846,20 +1275,61 @@ fn main() -> Result<()> {
                         return Ok(());
                     }
 
-                    let new_content = parser::serialize(&doc);
-                    fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
+                    storage::write(&cli.file, &doc)?;
+                    for task in announcements {
+                        print_assignment_announcement(&task, assignee)?;
+                    }
 
-                    println!("Assigned {} task(s) of type '{}' to {}", count, task_type, assignee);
+                    println!(
+                        "Assigned {} task(s) of type '{}' to {}",
+                        count, task_type, assignee
+                    );
                 }
 
-                BulkAction::SetByStatus { status, property, value } => {
+                BulkAction::SetByStatus {
+                    status,
+                    property,
+                    value,
+                } => {
                     let prop_key = PropertyKey::new(property)?;
+                    validate_property_value(value)?;
+                    if property == LAST_UPDATED_PROPERTY {
+                        anyhow::bail!(
+                            "{} is managed automatically and cannot be set directly.",
+                            LAST_UPDATED_PROPERTY
+                        );
+                    }
+                    let targets: Vec<_> = doc
+                        .tasks
+                        .tasks()
+                        .iter()
+                        .filter(|task| task.status() == Some(status.as_str()))
+                        .map(|task| task.id)
+                        .collect();
+                    if property == "Status" {
+                        for id in &targets {
+                            doc.ensure_next_transition(*id, Some(value))?;
+                        }
+                    }
                     let mut count = 0;
+                    let mut announcements = Vec::new();
 
                     for task in doc.tasks.tasks_mut() {
                         if task.status().map(|s| s == status).unwrap_or(false) {
+                            let assignment_changed = property == "Assigned To"
+                                && task.assignee() != Some(value.as_str());
                             task.set_property(prop_key.clone(), value.clone());
+                            touch_task(task);
+                            if assignment_changed {
+                                announcements.push(task.clone());
+                            }
                             count += 1;
+                        }
+                    }
+
+                    if property == "Status" && value == "done" {
+                        for id in targets {
+                            doc.remove_from_next(id);
                         }
                     }
 
@@ -868,23 +1338,27 @@ fn main() -> Result<()> {
                         return Ok(());
                     }
 
-                    let new_content = parser::serialize(&doc);
-                    fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
+                    storage::write(&cli.file, &doc)?;
+                    for task in announcements {
+                        print_assignment_announcement(&task, value)?;
+                    }
 
-                    println!("Set {} = {} on {} task(s) with status '{}'",
-                             property, value, count, status);
+                    println!(
+                        "Set {} = {} on {} task(s) with status '{}'",
+                        property, value, count, status
+                    );
                 }
             }
         }
 
         Commands::CheckConflicts => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let doc = parser::parse(&content)?;
+            let doc = read_document(&cli.file)?;
 
             // Find duplicate IDs
-            let mut id_occurrences: std::collections::HashMap<TaskId, Vec<&Task>> = std::collections::HashMap::new();
+            let mut id_occurrences: std::collections::HashMap<TaskId, Vec<&Task>> =
+                std::collections::HashMap::new();
             for task in doc.tasks.tasks() {
-                id_occurrences.entry(task.id).or_insert_with(Vec::new).push(task);
+                id_occurrences.entry(task.id).or_default().push(task);
             }
 
             let duplicates: Vec<_> = id_occurrences
@@ -909,13 +1383,13 @@ fn main() -> Result<()> {
         }
 
         Commands::ResolveConflicts { commit } => {
-            let content = fs::read_to_string(&cli.file).context("Failed to read frump.md file")?;
-            let mut doc = parser::parse(&content)?;
+            let mut doc = read_document(&cli.file)?;
 
             // Find duplicate IDs
-            let mut id_occurrences: std::collections::HashMap<TaskId, Vec<usize>> = std::collections::HashMap::new();
+            let mut id_occurrences: std::collections::HashMap<TaskId, Vec<usize>> =
+                std::collections::HashMap::new();
             for (idx, task) in doc.tasks.tasks().iter().enumerate() {
-                id_occurrences.entry(task.id).or_insert_with(Vec::new).push(idx);
+                id_occurrences.entry(task.id).or_default().push(idx);
             }
 
             let duplicates: Vec<_> = id_occurrences
@@ -930,7 +1404,10 @@ fn main() -> Result<()> {
             }
 
             // Find the maximum ID in the document
-            let max_id = doc.tasks.max_id().ok_or_else(|| anyhow::anyhow!("No tasks found"))?;
+            let max_id = doc
+                .tasks
+                .max_id()
+                .ok_or_else(|| anyhow::anyhow!("No tasks found"))?;
             let mut next_id = max_id.next();
 
             // Renumber conflicting tasks (keep first occurrence, renumber the rest)
@@ -941,14 +1418,14 @@ fn main() -> Result<()> {
                     let task = &mut doc.tasks.tasks_mut()[idx];
                     let old_id = task.id;
                     task.id = next_id;
+                    touch_task(task);
                     renumbered.push((old_id, next_id, task.subject.clone()));
                     next_id = next_id.next();
                 }
             }
 
             // Write back to file
-            let new_content = parser::serialize(&doc);
-            fs::write(&cli.file, new_content).context("Failed to write frump.md")?;
+            storage::write(&cli.file, &doc)?;
 
             println!("✓ Resolved {} duplicate task ID(s):\n", renumbered.len());
             for (old_id, new_id, subject) in &renumbered {
@@ -964,7 +1441,8 @@ fn main() -> Result<()> {
 
                 // Stage the frump.md file
                 let status = std::process::Command::new("git")
-                    .args(&["add", cli.file.to_str().unwrap()])
+                    .arg("add")
+                    .arg(&cli.file)
                     .status()
                     .context("Failed to stage file with git")?;
 
@@ -975,7 +1453,7 @@ fn main() -> Result<()> {
 
                 // Create commit
                 let status = std::process::Command::new("git")
-                    .args(&["commit", "-m", &commit_message])
+                    .args(["commit", "-m", &commit_message])
                     .status()
                     .context("Failed to create git commit")?;
 
@@ -993,4 +1471,438 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn ensure_close_is_recoverable(file: &Path, task_id: TaskId) -> Result<()> {
+    let tracked_file = if storage::is_sharded(file) {
+        file.join("tasks").join(format!("{}.md", task_id.value()))
+    } else {
+        file.to_path_buf()
+    };
+    let root_output = std::process::Command::new("git")
+        .current_dir(tracked_file.parent().unwrap_or_else(|| Path::new(".")))
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .context("Failed to locate the Git repository for task closure")?;
+    if !root_output.status.success() {
+        anyhow::bail!(
+            "Refusing to close a task: {} is not in a Git repository.",
+            tracked_file.display()
+        );
+    }
+    let root = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
+    let absolute_file = tracked_file
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve {}", tracked_file.display()))?;
+    let repository_path = absolute_file.strip_prefix(&root).map_err(|_| {
+        anyhow::anyhow!(
+            "Refusing to close a task: {} is outside the current Git repository.",
+            tracked_file.display()
+        )
+    })?;
+    let status = std::process::Command::new("git")
+        .current_dir(&root)
+        .args(["ls-files", "--error-unmatch", "--"])
+        .arg(repository_path)
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("Failed to verify whether the task file is tracked by Git")?;
+
+    if !status.success() {
+        anyhow::bail!(
+            "Refusing to close a task: {} is not tracked by Git, so its closure cannot be recovered from history.",
+            tracked_file.display()
+        );
+    }
+    Ok(())
+}
+
+fn discover_task_file() -> Result<PathBuf> {
+    let mut directory =
+        std::env::current_dir().context("Failed to determine the current directory")?;
+    loop {
+        let candidate = directory.join("frump.md");
+        match fs::metadata(&candidate) {
+            Ok(metadata) if metadata.is_file() => return Ok(candidate),
+            Ok(_) => anyhow::bail!("{} exists but is not a regular file", candidate.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to inspect {}", candidate.display()))
+            }
+        }
+        let sharded = directory.join("frump");
+        if storage::is_sharded(&sharded) {
+            return Ok(sharded);
+        }
+        let Some(parent) = directory.parent() else {
+            anyhow::bail!("No frump.md found from the current directory through the filesystem root. Pass --file explicitly or run frump init.");
+        };
+        if parent == directory {
+            anyhow::bail!("No frump.md found from the current directory through the filesystem root. Pass --file explicitly or run frump init.");
+        }
+        directory = parent.to_path_buf();
+    }
+}
+
+fn commit_task_file(file: &Path, message: &str) -> Result<()> {
+    let (directory, paths): (PathBuf, Vec<String>) = if let Some(root) = storage::sharded_root(file)
+    {
+        let parent = root
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("Sharded board path has no directory name"))?;
+        let legacy_source = format!("{name}.md");
+        let tracked_legacy_source = std::process::Command::new("git")
+            .current_dir(&parent)
+            .args(["ls-files", "--error-unmatch", "--", &legacy_source])
+            .output()
+            .context("Failed to inspect the legacy board path")?
+            .status
+            .success();
+        let mut paths = vec![name.to_string()];
+        if tracked_legacy_source {
+            paths.push(legacy_source);
+        }
+        (parent, paths)
+    } else {
+        let parent = file.parent().unwrap_or_else(|| Path::new("."));
+        let name = file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("Task file path has no filename"))?;
+        (parent.to_path_buf(), vec![name.to_string()])
+    };
+    let add = std::process::Command::new("git")
+        .current_dir(&directory)
+        .args(["add", "-A", "--"])
+        .args(&paths)
+        .status()
+        .context("Failed to stage task file")?;
+    if !add.success() {
+        anyhow::bail!("Git could not stage {}", file.display());
+    }
+    let commit = std::process::Command::new("git")
+        .current_dir(&directory)
+        .args(["commit", "-m", message, "--"])
+        .args(&paths)
+        .status()
+        .context("Failed to commit task file")?;
+    if !commit.success() {
+        anyhow::bail!("Git could not create a commit for {}", file.display());
+    }
+    Ok(())
+}
+
+fn print_assignment_announcement(task: &Task, assignee: &str) -> Result<()> {
+    if let Some(output) = announce_assignment(task, assignee)? {
+        println!("Messaged with metateam: {output}");
+    }
+    Ok(())
+}
+
+fn ensure_close_ready(doc: &frump::FrumpDoc, id: TaskId) -> Result<()> {
+    let task = doc
+        .tasks
+        .find_by_id(id)
+        .ok_or_else(|| anyhow::anyhow!("Task {} not found.", id))?;
+    if task.status() != Some("done") {
+        anyhow::bail!("Refusing to close task {}: Status must be done.", id);
+    }
+    for dependency in dependency_ids(task) {
+        if let Some(prerequisite) = doc.tasks.find_by_id(dependency) {
+            if prerequisite.status() != Some("done") {
+                anyhow::bail!(
+                    "Refusing to close task {}: dependency {} is not done.",
+                    id,
+                    dependency
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn normalize_search_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if matches!(character, '-' | '_') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .to_lowercase()
+}
+
+fn warn_if_new_status(doc: &frump::FrumpDoc, status: &str) {
+    let existing: std::collections::HashSet<_> = doc
+        .tasks
+        .tasks()
+        .iter()
+        .filter_map(|task| task.status())
+        .collect();
+    if !existing.contains(status) {
+        eprintln!("Warning: '{}' is a new status. Prefer an existing status unless there is a documented reason.", status);
+    }
+}
+
+fn touch_task(task: &mut Task) {
+    mark_updated(task, &now_utc());
+}
+
+fn current_crew_agent() -> Option<String> {
+    std::env::var("METATEAM_CREW_AGENT").ok()
+}
+
+fn read_document(file: &Path) -> Result<frump::FrumpDoc> {
+    storage::read(file).with_context(|| format!("Failed to read {}", file.display()))
+}
+
+#[derive(Serialize)]
+struct ListTask {
+    id: u32,
+    task_type: String,
+    subject: String,
+    body: String,
+    properties: std::collections::BTreeMap<String, String>,
+}
+
+impl From<&Task> for ListTask {
+    fn from(task: &Task) -> Self {
+        Self {
+            id: task.id.value(),
+            task_type: task.task_type.as_str().to_string(),
+            subject: task.subject.clone(),
+            body: task.body.clone(),
+            properties: task
+                .properties
+                .iter()
+                .map(|property| (property.key.as_str().to_string(), property.value.clone()))
+                .collect(),
+        }
+    }
+}
+
+fn parse_property_filter(filter: &str) -> Result<(PropertyKey, String)> {
+    let (key, value) = filter
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("--property must use KEY=VALUE"))?;
+    Ok((PropertyKey::new(key)?, value.to_string()))
+}
+
+fn sort_tasks(tasks: &mut [Task], key: &str, descending: bool) -> Result<()> {
+    enum SortKey {
+        Id,
+        Property(PropertyKey),
+    }
+    let key = match key {
+        "id" => SortKey::Id,
+        "status" => SortKey::Property(PropertyKey::status()),
+        "assignee" => SortKey::Property(PropertyKey::assigned_to()),
+        "last-updated" => SortKey::Property(PropertyKey::new(LAST_UPDATED_PROPERTY)?),
+        property => SortKey::Property(PropertyKey::new(property)?),
+    };
+    tasks.sort_by(|left, right| match &key {
+        SortKey::Id => {
+            let order = left.id.cmp(&right.id);
+            if descending {
+                order.reverse()
+            } else {
+                order
+            }
+        }
+        SortKey::Property(property) => {
+            match (left.get_property(property), right.get_property(property)) {
+                (Some(a), Some(b)) => {
+                    let order = a.cmp(b).then_with(|| left.id.cmp(&right.id));
+                    if descending {
+                        order.reverse()
+                    } else {
+                        order
+                    }
+                }
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => left.id.cmp(&right.id),
+            }
+        }
+    });
+    Ok(())
+}
+
+fn default_migration_destination(source: &Path) -> PathBuf {
+    source.with_extension("")
+}
+
+fn dependency_ids(task: &Task) -> Vec<TaskId> {
+    task.get_property(&PropertyKey::new("Depends On").expect("constant is valid"))
+        .map(|value| {
+            value
+                .split(',')
+                .filter_map(|id| id.trim().parse::<u32>().ok())
+                .filter_map(|id| TaskId::new(id).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn validate_dependencies(doc: &frump::FrumpDoc) -> Vec<String> {
+    let ids: std::collections::HashSet<_> = doc.tasks.tasks().iter().map(|task| task.id).collect();
+    let closed: std::collections::HashSet<_> = FrumpRepo::open(".")
+        .ok()
+        .and_then(|repo| repo.deleted_tasks().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
+    let mut errors = Vec::new();
+    for task in doc.tasks.tasks() {
+        if let Some(value) =
+            task.get_property(&PropertyKey::new("Depends On").expect("constant is valid"))
+        {
+            for raw in value.split(',') {
+                if raw.trim().is_empty()
+                    || raw
+                        .trim()
+                        .parse::<u32>()
+                        .ok()
+                        .and_then(|id| TaskId::new(id).ok())
+                        .is_none()
+                {
+                    errors.push(format!(
+                        "Task {} has invalid Depends On value '{}'",
+                        task.id,
+                        raw.trim()
+                    ));
+                }
+            }
+        }
+        for dependency in dependency_ids(task) {
+            if dependency == task.id {
+                errors.push(format!("Task {} depends on itself", task.id));
+            } else if !ids.contains(&dependency) && !closed.contains(&dependency) {
+                errors.push(format!(
+                    "Task {} references unknown dependency {}",
+                    task.id, dependency
+                ));
+            }
+        }
+    }
+    fn visit(
+        id: TaskId,
+        doc: &frump::FrumpDoc,
+        visiting: &mut std::collections::HashSet<TaskId>,
+        visited: &mut std::collections::HashSet<TaskId>,
+    ) -> bool {
+        if visited.contains(&id) {
+            return false;
+        }
+        if !visiting.insert(id) {
+            return true;
+        }
+        let cyclic = doc
+            .tasks
+            .find_by_id(id)
+            .map(|task| {
+                dependency_ids(task)
+                    .into_iter()
+                    .filter(|dependency| doc.tasks.find_by_id(*dependency).is_some())
+                    .any(|dependency| visit(dependency, doc, visiting, visited))
+            })
+            .unwrap_or(false);
+        visiting.remove(&id);
+        visited.insert(id);
+        cyclic
+    }
+    let mut visiting = std::collections::HashSet::new();
+    let mut visited = std::collections::HashSet::new();
+    for task in doc.tasks.tasks() {
+        if visit(task.id, doc, &mut visiting, &mut visited) {
+            errors.push("Dependency cycle detected".to_string());
+            break;
+        }
+    }
+    errors
+}
+
+fn print_dependency_tree(
+    doc: &frump::FrumpDoc,
+    id: TaskId,
+    depth: usize,
+    seen: &mut std::collections::HashSet<TaskId>,
+) -> Result<()> {
+    let task = doc
+        .tasks
+        .find_by_id(id)
+        .ok_or_else(|| anyhow::anyhow!("Task {} not found.", id))?;
+    println!(
+        "{}{} {} - {}",
+        "  ".repeat(depth),
+        task.task_type,
+        task.id,
+        task.subject
+    );
+    if !seen.insert(id) {
+        return Ok(());
+    }
+    for dependency in dependency_ids(task) {
+        print_dependency_tree(doc, dependency, depth + 1, seen)?;
+    }
+    Ok(())
+}
+
+fn search_similarity(query: &str, value: &str) -> f64 {
+    let value = normalize_search_text(value);
+    if value.contains(query) {
+        return 1.0;
+    }
+    let query_words: Vec<_> = query.split_whitespace().collect();
+    let words: Vec<_> = value.split_whitespace().collect();
+    if query_words.is_empty() || words.is_empty() {
+        return 0.0;
+    }
+    let window = query_words.len();
+    (1..=words.len())
+        .map(|start| {
+            let end = (start + window).min(words.len());
+            strsim::jaro_winkler(query, &words[start - 1..end].join(" "))
+        })
+        .fold(0.0, f64::max)
+}
+
+fn all_query_tokens_match(query: &str, subject: &str, body: &str) -> bool {
+    let query_tokens: Vec<_> = query.split_whitespace().collect();
+    let searchable = format!(
+        "{} {}",
+        normalize_search_text(subject),
+        normalize_search_text(body)
+    );
+    let searchable_tokens: Vec<_> = searchable.split_whitespace().collect();
+    query_tokens.iter().all(|query_token| {
+        searchable_tokens
+            .iter()
+            .any(|candidate| strsim::normalized_levenshtein(query_token, candidate) >= 0.80)
+    })
+}
+
+fn acquire_write_lock(file: &Path) -> Result<std::fs::File> {
+    use fs2::FileExt;
+    let lock_path = storage::sharded_root(file)
+        .map(|root| root.join("general.md"))
+        .unwrap_or_else(|| file.to_path_buf());
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open {} for locking", lock_path.display()))?;
+    lock.lock_exclusive()
+        .with_context(|| format!("Failed to acquire write lock for {}", file.display()))?;
+    Ok(lock)
 }
