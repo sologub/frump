@@ -75,7 +75,7 @@ frump unset 12 Status
 
 `frump close` requires `Status: done` and every active prerequisite to be done. A new status remains allowed, but emits a warning so project vocabulary does not drift accidentally. `frump add` warns when similar existing tasks are found but still creates the task.
 
-Frump automatically maintains `Last Updated` whenever it creates or changes a task. Property values are compact metadata and may be at most 40 bytes; put longer evidence, reports, and rationale in the body. `--append-body` adds a dated Markdown update and, when invoked by a Metateam crew member, records that member's name. `--append-body-notify` does the same, then sends the raw appended fragment with `metateam crew message`. The message goes to the crew members named in the task's `Assigned To` value (comma-separated names each get it), or to all crew members when the task has no assignee. Normal web Save deliberately replaces the body with exactly the text in the editor.
+Frump automatically maintains `Last Updated` whenever it creates or changes a task. Property values are compact metadata and may be at most 40 bytes; put longer evidence, reports, and rationale in the body. `--append-body` adds a dated Markdown update and, when invoked by a Metateam crew member, records that member's name. `--append-body-notify` does the same, then sends the raw appended fragment with `metateam crew message`. The message goes to the crew members named in the task's `Assigned To` value (comma-separated names each get it), or to all crew members when the task has no assignee. `--append-body-msg` does the same append, then sends the fragment with `metateam crew message all`, whoever the assignee is. Normal web Save deliberately replaces the body with exactly the text in the editor.
 
 Initialize a new board explicitly:
 
@@ -338,6 +338,9 @@ frump update <task_id> --append-body "Validation passed after rebuild"
 
 # Append dated evidence and notify the task's assignee through Metateam
 frump update <task_id> --append-body-notify "Validation passed after rebuild"
+
+# Append dated evidence and notify the whole Metateam crew
+frump update <task_id> --append-body-msg "Validation passed after rebuild"
 ```
 
 ### next - Manage the ordered todo plan
@@ -352,7 +355,7 @@ frump set 12 Status working
 frump set 12 Status done
 ```
 
-`--body` replaces the body exactly and refuses empty or whitespace-only values, so an accidental empty shell expansion cannot erase the record. Use `--clear-body` for an intentional removal. `--append-body` creates a dated Markdown update and adds the current Metateam crew member when that identity is available. `--append-body-notify` additionally sends the raw fragment after saving the task. The message goes to the crew members named in the task's `Assigned To` value (comma-separated names each get it), or to all crew members when the task has no assignee. When the `metateam` command is not on `PATH`, the update is saved and the message is skipped. When Metateam cannot deliver the message, Frump prints a warning and the update stays saved.
+`--body` replaces the body exactly and refuses empty or whitespace-only values, so an accidental empty shell expansion cannot erase the record. Use `--clear-body` for an intentional removal. `--append-body` creates a dated Markdown update and adds the current Metateam crew member when that identity is available. `--append-body-notify` additionally sends the raw fragment after saving the task. The message goes to the crew members named in the task's `Assigned To` value (comma-separated names each get it), or to all crew members when the task has no assignee. `--append-body-msg` sends the fragment to all Metateam crew members, whoever the assignee is. When the `metateam` command is not on `PATH`, the update is saved and the message is skipped. When Metateam cannot deliver the message, Frump prints a warning and the update stays saved.
 
 **Example:**
 ```bash

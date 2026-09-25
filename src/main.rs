@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 use frump::{
     announce_assignment, append_update, export_csv, export_json, import_json, mark_updated,
-    notification_warning, notify_task_update, now_utc, storage, validate_property_value,
-    ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskTemplate, TaskType, TemplateManager,
-    LAST_UPDATED_PROPERTY,
+    notification_warning, notify_task_update, now_utc, send_metateam_message, storage,
+    validate_property_value, ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskTemplate,
+    TaskType, TemplateManager, LAST_UPDATED_PROPERTY,
 };
 use serde::Serialize;
 
@@ -184,7 +184,7 @@ enum Commands {
         body: Option<String>,
 
         /// Explicitly remove the current body
-        #[arg(long, conflicts_with_all = ["append_body", "append_body_notify"])]
+        #[arg(long, conflicts_with_all = ["append_body", "append_body_notify", "append_body_msg"])]
         clear_body: bool,
 
         /// Append text to the task body instead of replacing it
@@ -195,6 +195,10 @@ enum Commands {
         /// (every crew member when the task has no assignee)
         #[arg(long, conflicts_with_all = ["body", "clear_body", "append_body"])]
         append_body_notify: Option<String>,
+
+        /// Append text to the task body and notify every Metateam crew member
+        #[arg(long, conflicts_with_all = ["body", "clear_body", "append_body", "append_body_notify"])]
+        append_body_msg: Option<String>,
     },
 
     /// Search tasks by keyword
@@ -770,12 +774,14 @@ async fn main() -> Result<()> {
             clear_body,
             append_body,
             append_body_notify,
+            append_body_msg,
         } => {
             if subject.is_none()
                 && body.is_none()
                 && !clear_body
                 && append_body.is_none()
                 && append_body_notify.is_none()
+                && append_body_msg.is_none()
             {
                 println!("Error: provide --subject, --body, --clear-body, or an append option");
                 return Ok(());
@@ -809,6 +815,9 @@ async fn main() -> Result<()> {
                 } else if let Some(extra) = append_body_notify {
                     append_update(task, extra, current_crew_agent().as_deref())?;
                     println!("Appended body for task {}", id);
+                } else if let Some(extra) = append_body_msg {
+                    append_update(task, extra, current_crew_agent().as_deref())?;
+                    println!("Appended body for task {}", id);
                 } else {
                     touch_task(task);
                 }
@@ -820,6 +829,11 @@ async fn main() -> Result<()> {
                         .find_by_id(task_id)
                         .expect("task exists after update");
                     report_notification(notify_task_update(task, message));
+                } else if let Some(message) = append_body_msg {
+                    report_notification(send_metateam_message(
+                        &["crew", "message", "all", message],
+                        "send message",
+                    ));
                 }
             } else {
                 anyhow::bail!("Task {} not found.", id);

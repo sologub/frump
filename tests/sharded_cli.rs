@@ -695,9 +695,48 @@ fn undeliverable_notifications_warn_and_keep_the_saved_change() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[cfg(unix)]
 #[test]
-fn append_body_msg_is_no_longer_an_option() {
-    let root = unique_root("append-msg-removed");
+fn append_body_msg_broadcasts_to_the_whole_crew_even_with_an_assignee() {
+    let root = unique_root("append-msg-broadcast");
+    let board = single_file_board(&root);
+    let tools = recording_metateam(&root, "printf 'delivered by test\\n'\n");
+    let arguments = root.join("message-arguments");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_frump"))
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "update",
+            "2",
+            "--append-body-msg",
+            "Evidence for everyone",
+        ])
+        .env("PATH", &tools)
+        .env("FRUMP_MESSAGE_ARGS", &arguments)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("Messaged with metateam: delivered by test"));
+    assert_eq!(
+        fs::read_to_string(arguments).unwrap(),
+        "crew\nmessage\nall\nEvidence for everyone\n"
+    );
+    let saved = fs::read_to_string(board).unwrap();
+    assert!(saved.contains("Evidence for everyone"));
+    assert!(saved.contains("Assigned To: Ada"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn append_body_msg_and_append_body_notify_cannot_be_combined() {
+    let root = unique_root("append-msg-notify-conflict");
     let board = single_file_board(&root);
     let before = fs::read(&board).unwrap();
 
@@ -708,13 +747,15 @@ fn append_body_msg_is_no_longer_an_option() {
             "update",
             "1",
             "--append-body-msg",
-            "Old flag",
+            "One",
+            "--append-body-notify",
+            "Two",
         ])
         .output()
         .unwrap();
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("--append-body-msg"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
     assert_eq!(fs::read(&board).unwrap(), before);
     let _ = fs::remove_dir_all(root);
 }
