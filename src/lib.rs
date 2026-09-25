@@ -53,6 +53,9 @@ pub use domain::{
 };
 pub use export::{export_csv, export_json, import_json};
 pub use git::{ChangeType, FrumpRepo, TaskCommit, TaskHistory};
-pub use notifications::{announce_assignment, assignment_announcement, send_metateam_message};
+pub use notifications::{
+    announce_assignment, assignment_announcement, notification_warning, notify_task_update,
+    send_metateam_message,
+};
 pub use templates::{TaskTemplate, TemplateManager};
 pub use updates::{append_update, mark_updated, now_utc, LAST_UPDATED_PROPERTY};

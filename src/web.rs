@@ -16,8 +16,8 @@ use std::{
 };
 
 use crate::{
-    announce_assignment, mark_updated, now_utc, send_metateam_message, storage,
-    validate_property_value, FrumpDoc, FrumpRepo, PropertyKey, Task, TaskId, TaskType,
+    announce_assignment, mark_updated, notification_warning, now_utc, send_metateam_message,
+    storage, validate_property_value, FrumpDoc, FrumpRepo, PropertyKey, Task, TaskId, TaskType,
 };
 
 #[derive(Clone)]
@@ -46,6 +46,15 @@ struct TaskDto {
     subject: String,
     body: String,
     properties: Vec<PropertyDto>,
+}
+
+/// A saved task plus the warning of a notification that could not be delivered.
+#[derive(Debug, Serialize)]
+struct SavedTaskDto {
+    #[serde(flatten)]
+    task: TaskDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,7 +111,7 @@ pub async fn serve(file: PathBuf, port: u16) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .with_context(|| format!("Failed to bind local web server at http://{address}"))?;
-    println!("Frump board: http://{address}");
+    println!("Frump board: http://{}", listener.local_addr()?);
     axum::serve(listener, app)
         .await
         .context("Local web server stopped unexpectedly")
@@ -119,7 +128,7 @@ async fn document(State(state): State<AppState>) -> ApiResult<Json<DocumentDto>>
 async fn create_task(
     State(state): State<AppState>,
     Json(input): Json<TaskInput>,
-) -> ApiResult<Json<TaskDto>> {
+) -> ApiResult<Json<SavedTaskDto>> {
     let _lock = acquire_write_lock(&state.file)?;
     let mut doc = read_parsed_document(&state.file)?;
     let id = next_task_id(&doc);
@@ -130,18 +139,22 @@ async fn create_task(
     let response = task_to_dto(&task);
     doc.tasks.add(task);
     write_document(&state.file, &doc)?;
+    let mut warning = None;
     if let Some(assignee) = assignment {
         let task = doc.tasks.find_by_id(id).expect("task was added");
-        announce_assignment(task, &assignee)?;
+        warning = assignment_warning(task, &assignee);
     }
-    Ok(Json(response))
+    Ok(Json(SavedTaskDto {
+        task: response,
+        warning,
+    }))
 }
 
 async fn update_task(
     State(state): State<AppState>,
     Path(id): Path<u32>,
     Json(input): Json<TaskInput>,
-) -> ApiResult<Json<TaskDto>> {
+) -> ApiResult<Json<SavedTaskDto>> {
     let _lock = acquire_write_lock(&state.file)?;
     let mut doc = read_parsed_document(&state.file)?;
     let task_id = TaskId::new(id)?;
@@ -167,16 +180,20 @@ async fn update_task(
         doc.remove_from_next(task_id);
     }
     write_document(&state.file, &doc)?;
+    let mut warning = None;
     if assignment_changed {
         if let Some(assignee) = assignment {
             let task = doc
                 .tasks
                 .find_by_id(task_id)
                 .expect("task exists after update");
-            announce_assignment(task, &assignee)?;
+            warning = assignment_warning(task, &assignee);
         }
     }
-    Ok(Json(response))
+    Ok(Json(SavedTaskDto {
+        task: response,
+        warning,
+    }))
 }
 
 async fn delete_task(State(state): State<AppState>, Path(id): Path<u32>) -> ApiResult<StatusCode> {
@@ -224,6 +241,15 @@ async fn notify_task(
     )
     .map_err(ApiError)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Announce an assignment from a request handler. The handler returns the warning
+/// to the browser and never prints: a closed server stdout or stderr must not
+/// abort a response whose task change is already saved.
+fn assignment_warning(task: &Task, assignee: &str) -> Option<String> {
+    announce_assignment(task, assignee)
+        .err()
+        .map(|error| notification_warning(&error))
 }
 
 fn read_document(file: &FsPath) -> Result<DocumentDto> {

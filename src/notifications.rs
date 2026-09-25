@@ -12,16 +12,50 @@ pub fn assignment_announcement(task: &Task, assignee: &str) -> String {
     )
 }
 
-/// Announce a persisted assignment through the shared crew channel.
+/// Metateam target for a message about a task: the comma-separated names in its
+/// `Assigned To` value, or the whole crew when the task has no assignee.
+///
+/// Names pass through unchanged, so an assignee of `all`, `all-crews` or
+/// `all-hosts` deliberately broadcasts to those agents.
+pub fn notification_target(assignee: Option<&str>) -> String {
+    let recipients: Vec<&str> = assignee
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    if recipients.is_empty() {
+        "all".to_string()
+    } else {
+        recipients.join(",")
+    }
+}
+
+/// Announce a persisted assignment to the new assignee.
 ///
 /// Returns `None` when the optional `metateam` command is not installed, so an
 /// assignment stays a purely local operation on machines without Metateam.
 pub fn announce_assignment(task: &Task, assignee: &str) -> Result<Option<String>> {
     let body = assignment_announcement(task, assignee);
+    let target = notification_target(Some(assignee));
     send_metateam_message(
-        &["crew", "message", "--from", "frump", "all", &body],
+        &["crew", "message", "--from", "frump", &target, &body],
         "send assignment announcement",
     )
+}
+
+/// Send the raw text of a persisted task update to the task's assignee.
+pub fn notify_task_update(task: &Task, message: &str) -> Result<Option<String>> {
+    let target = notification_target(task.assignee());
+    send_metateam_message(&["crew", "message", &target, message], "send message")
+}
+
+/// Warning text for a notification that failed after its task change was saved.
+///
+/// A failed send is a warning, not an error: the change is already on disk, and
+/// an `Assigned To` value that names no crew member must not fail the command.
+pub fn notification_warning(error: &anyhow::Error) -> String {
+    format!("{error:#}. The task change is saved.")
 }
 
 /// Run `metateam` with the given arguments.
@@ -98,6 +132,20 @@ mod tests {
             assignment_announcement(&task, "Ada"),
             "Bug 4 is assigned to Ada."
         );
+    }
+
+    #[test]
+    fn notification_target_names_the_assignees_or_the_whole_crew() {
+        assert_eq!(notification_target(Some("carmack")), "carmack");
+        assert_eq!(
+            notification_target(Some(" carmack , hipp ")),
+            "carmack,hipp"
+        );
+        assert_eq!(notification_target(Some("carmack,,")), "carmack");
+        assert_eq!(notification_target(Some("all-hosts")), "all-hosts");
+        assert_eq!(notification_target(Some(" , ")), "all");
+        assert_eq!(notification_target(Some("")), "all");
+        assert_eq!(notification_target(None), "all");
     }
 
     #[test]

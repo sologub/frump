@@ -1556,7 +1556,7 @@ function hideNotice() {
   if (!n.dataset.sticky) n.classList.add('hidden');
 }
 
-/* ---------- server exchange (endpoints, shapes and cadence unchanged) ---------- */
+/* ---------- server exchange (a save response is the task plus an optional notification warning) ---------- */
 /* An external edit must never cost the user their typing. The board behind the
    task view refreshes as usual; the open draft is left exactly as it is and the
    user is asked, in the task view, which version should win. */
@@ -1697,7 +1697,7 @@ async function save() {
     body: JSON.stringify(input()),
   });
   if (!r.ok) throw Error(await r.text());
-  const saved = await r.json();
+  const { warning, ...saved } = await r.json();
   editing = saved;
   editingBase = taskSignature(saved);
   conflictDismissed = null;
@@ -1706,6 +1706,7 @@ async function save() {
   if (creating) syncRoute(true);  /* #task/new becomes the id it was given */
   saveState(creating ? 'Created #' + saved.id : 'Saved');
   announce(creating ? 'Task ' + saved.id + ' created' : 'Task ' + saved.id + ' saved');
+  if (warning) notice(warning, 'warn', true);
   await load();
   /* The file is the authority: re-reading it absorbs any normalisation the
      writer applied, so the next poll cannot mistake it for someone else's edit. */
@@ -1728,6 +1729,8 @@ async function move(id, key) {
     notice('Task ' + id + ' was not moved: ' + (await r.text()).trim(), 'error', true);
     return;
   }
+  const { warning } = await r.json();
+  if (warning) notice(warning, 'warn', true);
   await load();
   announce('Task ' + id + ' moved to ' + label(key));
   $('.card[data-id="' + CSS.escape(String(id)) + '"] .open', board)?.focus();

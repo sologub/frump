@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 
 use frump::{
     announce_assignment, append_update, export_csv, export_json, import_json, mark_updated,
-    now_utc, send_metateam_message, storage, validate_property_value, ChangeType, FrumpRepo,
-    PropertyKey, Task, TaskId, TaskTemplate, TaskType, TemplateManager, LAST_UPDATED_PROPERTY,
+    notification_warning, notify_task_update, now_utc, storage, validate_property_value,
+    ChangeType, FrumpRepo, PropertyKey, Task, TaskId, TaskTemplate, TaskType, TemplateManager,
+    LAST_UPDATED_PROPERTY,
 };
 use serde::Serialize;
 
@@ -183,16 +184,17 @@ enum Commands {
         body: Option<String>,
 
         /// Explicitly remove the current body
-        #[arg(long, conflicts_with_all = ["append_body", "append_body_msg"])]
+        #[arg(long, conflicts_with_all = ["append_body", "append_body_notify"])]
         clear_body: bool,
 
         /// Append text to the task body instead of replacing it
         #[arg(long, conflicts_with_all = ["body", "clear_body"])]
         append_body: Option<String>,
 
-        /// Append text to the task body and notify every Metateam crew member
+        /// Append text to the task body and notify the task's assignee through Metateam
+        /// (every crew member when the task has no assignee)
         #[arg(long, conflicts_with_all = ["body", "clear_body", "append_body"])]
-        append_body_msg: Option<String>,
+        append_body_notify: Option<String>,
     },
 
     /// Search tasks by keyword
@@ -586,7 +588,7 @@ async fn main() -> Result<()> {
             storage::write(&cli.file, &doc)?;
 
             if let Some(assignee) = assignment {
-                print_assignment_announcement(&assignment_task, &assignee)?;
+                print_assignment_announcement(&assignment_task, &assignee);
             }
 
             println!("Added {} {} - {}", task_type, next_id, subject);
@@ -628,7 +630,7 @@ async fn main() -> Result<()> {
                 storage::write(&cli.file, &doc)?;
 
                 if let Some(task) = assigned_task {
-                    print_assignment_announcement(&task, assignee)?;
+                    print_assignment_announcement(&task, assignee);
                 }
 
                 println!("Assigned task {} to {}", id, assignee);
@@ -678,7 +680,7 @@ async fn main() -> Result<()> {
             }
             storage::write(&cli.file, &doc)?;
             if let Some(task) = assigned_task {
-                print_assignment_announcement(&task, value)?;
+                print_assignment_announcement(&task, value);
             }
             println!("Set {} = {} on task {}", property, value, id);
         }
@@ -767,13 +769,13 @@ async fn main() -> Result<()> {
             body,
             clear_body,
             append_body,
-            append_body_msg,
+            append_body_notify,
         } => {
             if subject.is_none()
                 && body.is_none()
                 && !clear_body
                 && append_body.is_none()
-                && append_body_msg.is_none()
+                && append_body_notify.is_none()
             {
                 println!("Error: provide --subject, --body, --clear-body, or an append option");
                 return Ok(());
@@ -804,7 +806,7 @@ async fn main() -> Result<()> {
                 if let Some(extra) = append_body {
                     append_update(task, extra, current_crew_agent().as_deref())?;
                     println!("Appended body for task {}", id);
-                } else if let Some(extra) = append_body_msg {
+                } else if let Some(extra) = append_body_notify {
                     append_update(task, extra, current_crew_agent().as_deref())?;
                     println!("Appended body for task {}", id);
                 } else {
@@ -812,12 +814,12 @@ async fn main() -> Result<()> {
                 }
 
                 storage::write(&cli.file, &doc)?;
-                if let Some(message) = append_body_msg {
-                    if let Some(output) =
-                        send_metateam_message(&["crew", "message", "all", message], "send message")?
-                    {
-                        println!("Messaged with metateam: {output}");
-                    }
+                if let Some(message) = append_body_notify {
+                    let task = doc
+                        .tasks
+                        .find_by_id(task_id)
+                        .expect("task exists after update");
+                    report_notification(notify_task_update(task, message));
                 }
             } else {
                 anyhow::bail!("Task {} not found.", id);
@@ -1136,7 +1138,7 @@ async fn main() -> Result<()> {
 
                 storage::write(&cli.file, &current_doc)?;
                 for (task, assignee) in announcements {
-                    print_assignment_announcement(&task, &assignee)?;
+                    print_assignment_announcement(&task, &assignee);
                 }
 
                 println!("Merged {} tasks into frump.md", added);
@@ -1145,7 +1147,7 @@ async fn main() -> Result<()> {
                 storage::write(&cli.file, &imported_doc)?;
                 for task in imported_doc.tasks.tasks() {
                     if let Some(assignee) = task.assignee() {
-                        print_assignment_announcement(task, assignee)?;
+                        print_assignment_announcement(task, assignee);
                     }
                 }
 
@@ -1277,7 +1279,7 @@ async fn main() -> Result<()> {
 
                     storage::write(&cli.file, &doc)?;
                     for task in announcements {
-                        print_assignment_announcement(&task, assignee)?;
+                        print_assignment_announcement(&task, assignee);
                     }
 
                     println!(
@@ -1340,7 +1342,7 @@ async fn main() -> Result<()> {
 
                     storage::write(&cli.file, &doc)?;
                     for task in announcements {
-                        print_assignment_announcement(&task, value)?;
+                        print_assignment_announcement(&task, value);
                     }
 
                     println!(
@@ -1598,11 +1600,16 @@ fn commit_task_file(file: &Path, message: &str) -> Result<()> {
     Ok(())
 }
 
-fn print_assignment_announcement(task: &Task, assignee: &str) -> Result<()> {
-    if let Some(output) = announce_assignment(task, assignee)? {
-        println!("Messaged with metateam: {output}");
+fn print_assignment_announcement(task: &Task, assignee: &str) {
+    report_notification(announce_assignment(task, assignee));
+}
+
+fn report_notification(result: Result<Option<String>>) {
+    match result {
+        Ok(Some(output)) => println!("Messaged with metateam: {output}"),
+        Ok(None) => {}
+        Err(error) => eprintln!("Warning: {}", notification_warning(&error)),
     }
-    Ok(())
 }
 
 fn ensure_close_ready(doc: &frump::FrumpDoc, id: TaskId) -> Result<()> {

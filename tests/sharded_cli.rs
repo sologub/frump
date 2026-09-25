@@ -144,6 +144,25 @@ fn single_file_board(root: &std::path::Path) -> std::path::PathBuf {
     board
 }
 
+/// A fake `metateam` that records its arguments in `$FRUMP_MESSAGE_ARGS`, then runs `tail`.
+#[cfg(unix)]
+fn recording_metateam(root: &std::path::Path, tail: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tools = root.join("tools");
+    fs::create_dir(&tools).unwrap();
+    let metateam = tools.join("metateam");
+    fs::write(
+        &metateam,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FRUMP_MESSAGE_ARGS\"\n{tail}"),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&metateam).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&metateam, permissions).unwrap();
+    tools
+}
+
 fn unique_root(label: &str) -> std::path::PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -544,7 +563,7 @@ fn sharded_next_accepts_mixed_card_types_and_refuses_missing_ids_atomically() {
 
 #[cfg(unix)]
 #[test]
-fn append_body_msg_saves_the_update_and_broadcasts_the_raw_fragment() {
+fn append_body_notify_without_assignee_saves_the_update_and_broadcasts_the_raw_fragment() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = unique_root("append-message");
@@ -568,7 +587,7 @@ fn append_body_msg_saves_the_update_and_broadcasts_the_raw_fragment() {
             board.to_str().unwrap(),
             "update",
             "1",
-            "--append-body-msg",
+            "--append-body-notify",
             "Evidence accepted",
         ])
         .env("PATH", &tools)
@@ -590,6 +609,113 @@ fn append_body_msg_saves_the_update_and_broadcasts_the_raw_fragment() {
     assert!(fs::read_to_string(board)
         .unwrap()
         .contains("Evidence accepted"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn append_body_notify_sends_the_raw_fragment_only_to_the_assignee() {
+    let root = unique_root("append-notify-assignee");
+    let board = single_file_board(&root);
+    let tools = recording_metateam(&root, "printf 'delivered by test\\n'\n");
+    let arguments = root.join("message-arguments");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_frump"))
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "update",
+            "2",
+            "--append-body-notify",
+            "Evidence for Ada",
+        ])
+        .env("PATH", &tools)
+        .env("FRUMP_MESSAGE_ARGS", &arguments)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(arguments).unwrap(),
+        "crew\nmessage\nAda\nEvidence for Ada\n"
+    );
+    assert!(fs::read_to_string(board)
+        .unwrap()
+        .contains("Evidence for Ada"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn undeliverable_notifications_warn_and_keep_the_saved_change() {
+    let root = unique_root("notify-undeliverable");
+    let board = single_file_board(&root);
+    let tools = recording_metateam(&root, "echo 'unknown recipient' >&2\nexit 1\n");
+    let arguments = root.join("message-arguments");
+    let binary = env!("CARGO_BIN_EXE_frump");
+
+    for (args, expected_target, warning) in [
+        (
+            vec!["assign", "1", "John Doe"],
+            "John Doe",
+            "Warning: Metateam could not send assignment announcement: unknown recipient. The task change is saved.",
+        ),
+        (
+            vec!["update", "2", "--append-body-notify", "Kept evidence"],
+            "Ada",
+            "Warning: Metateam could not send message: unknown recipient. The task change is saved.",
+        ),
+    ] {
+        let _ = fs::remove_file(&arguments);
+        let output = Command::new(binary)
+            .args(["--file", board.to_str().unwrap()])
+            .args(&args)
+            .env("PATH", &tools)
+            .env("FRUMP_MESSAGE_ARGS", &arguments)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{args:?}: {stderr}");
+        assert!(stderr.contains(warning), "{args:?}: {stderr}");
+        assert!(
+            fs::read_to_string(&arguments)
+                .unwrap()
+                .lines()
+                .any(|line| line == expected_target),
+            "{args:?} must address {expected_target}"
+        );
+    }
+    let saved = fs::read_to_string(&board).unwrap();
+    assert!(saved.contains("Assigned To: John Doe"));
+    assert!(saved.contains("Kept evidence"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn append_body_msg_is_no_longer_an_option() {
+    let root = unique_root("append-msg-removed");
+    let board = single_file_board(&root);
+    let before = fs::read(&board).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_frump"))
+        .args([
+            "--file",
+            board.to_str().unwrap(),
+            "update",
+            "1",
+            "--append-body-msg",
+            "Old flag",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--append-body-msg"));
+    assert_eq!(fs::read(&board).unwrap(), before);
     let _ = fs::remove_dir_all(root);
 }
 
@@ -693,11 +819,13 @@ fn assignment_changes_are_announced_after_the_board_is_written() {
             "message",
             "--from",
             "frump",
-            "all",
+            "Ada",
             first_body.as_str()
         ]
     );
+    assert_eq!(invocations[1][4], "Bob");
     assert_eq!(invocations[1][5], format!("Task {id} is assigned to Bob."));
+    assert_eq!(invocations[2][4], "Carol");
     assert_eq!(
         invocations[2][5],
         format!("Task {id} is assigned to Carol.")
@@ -719,7 +847,7 @@ fn assignment_changes_are_announced_after_the_board_is_written() {
 
 #[cfg(unix)]
 #[test]
-fn append_body_msg_without_metateam_saves_the_update_and_succeeds() {
+fn append_body_notify_without_metateam_saves_the_update_and_succeeds() {
     let root = unique_root("append-message-missing");
     let board = single_file_board(&root);
     let empty_path = root.join("no-tools");
@@ -731,7 +859,7 @@ fn append_body_msg_without_metateam_saves_the_update_and_succeeds() {
             board.to_str().unwrap(),
             "update",
             "1",
-            "--append-body-msg",
+            "--append-body-notify",
             "Evidence accepted without a notification channel",
         ])
         .env("PATH", &empty_path)
@@ -789,5 +917,143 @@ fn assignment_without_metateam_keeps_the_assignee_and_succeeds() {
     assert!(fs::read_to_string(&board)
         .unwrap()
         .contains("Assigned To: Ada"));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Start `frump web` on a free port. Its stdout and stderr pipes are closed once
+/// the banner is read, so a request handler that prints would fail.
+#[cfg(unix)]
+fn start_board(
+    board: &std::path::Path,
+    tools: &std::path::Path,
+    arguments: &std::path::Path,
+) -> (std::process::Child, u16) {
+    use std::io::BufRead;
+
+    let mut server = Command::new(env!("CARGO_BIN_EXE_frump"))
+        .args(["--file", board.to_str().unwrap(), "web", "--port", "0"])
+        .env("PATH", tools)
+        .env("FRUMP_MESSAGE_ARGS", arguments)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut banner = String::new();
+    std::io::BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut banner)
+        .unwrap();
+    drop(server.stderr.take());
+    let port = banner.trim().rsplit(':').next().unwrap().parse().unwrap();
+    (server, port)
+}
+
+/// Send one HTTP/1.1 request to the local board and return the status line and body.
+#[cfg(unix)]
+fn http_request(port: u16, method: &str, path: &str, body: &str) -> (String, String) {
+    use std::io::{Read, Write};
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let (head, body) = response.split_once("\r\n\r\n").unwrap();
+    (head.lines().next().unwrap().to_string(), body.to_string())
+}
+
+#[cfg(unix)]
+#[test]
+fn web_save_returns_the_warning_of_an_undeliverable_announcement() {
+    let root = unique_root("web-notify-warning");
+    let board = single_file_board(&root);
+    let tools = recording_metateam(&root, "echo 'unknown recipient' >&2\nexit 1\n");
+    let arguments = root.join("message-arguments");
+    let (mut server, port) = start_board(&board, &tools, &arguments);
+
+    let warning = "Metateam could not send assignment announcement: unknown recipient. The task change is saved.";
+    let created = http_request(
+        port,
+        "POST",
+        "/api/tasks",
+        r#"{"task_type":"Task","subject":"Web fixture","body":"","properties":[{"key":"Status","value":"todo"},{"key":"Assigned To","value":"John Doe"}]}"#,
+    );
+    let reassigned = http_request(
+        port,
+        "PUT",
+        "/api/tasks/1",
+        r#"{"task_type":"Task","subject":"First","body":"","properties":[{"key":"Status","value":"todo"},{"key":"Assigned To","value":"Jane Roe"}]}"#,
+    );
+    let unchanged = http_request(
+        port,
+        "PUT",
+        "/api/tasks/1",
+        r#"{"task_type":"Task","subject":"First, renamed","body":"","properties":[{"key":"Status","value":"todo"},{"key":"Assigned To","value":"Jane Roe"}]}"#,
+    );
+    let _ = server.kill();
+    let _ = server.wait();
+
+    for (label, (status, body)) in [("create", &created), ("reassign", &reassigned)] {
+        assert!(status.contains("200"), "{label}: {status} {body}");
+        let json: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(json["warning"], warning, "{label}: {body}");
+        assert!(json["id"].is_u64(), "{label}: the task stays flat: {body}");
+    }
+    assert!(
+        unchanged.0.contains("200"),
+        "{} {}",
+        unchanged.0,
+        unchanged.1
+    );
+    let json: serde_json::Value = serde_json::from_str(&unchanged.1).unwrap();
+    assert!(
+        json.get("warning").is_none(),
+        "no announcement, no warning: {}",
+        unchanged.1
+    );
+    let saved = fs::read_to_string(&board).unwrap();
+    assert!(saved.contains("Assigned To: John Doe"));
+    assert!(saved.contains("Assigned To: Jane Roe"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn web_save_answers_after_a_delivered_announcement_with_closed_server_output() {
+    let root = unique_root("web-notify-delivered");
+    let board = single_file_board(&root);
+    let tools = recording_metateam(&root, "printf 'delivered by test\\n'\n");
+    let arguments = root.join("message-arguments");
+    let (mut server, port) = start_board(&board, &tools, &arguments);
+
+    let (status, body) = http_request(
+        port,
+        "POST",
+        "/api/tasks",
+        r#"{"task_type":"Task","subject":"Delivered fixture","body":"","properties":[{"key":"Status","value":"todo"},{"key":"Assigned To","value":"Ada"}]}"#,
+    );
+    let _ = server.kill();
+    let _ = server.wait();
+
+    assert!(status.contains("200"), "{status} {body}");
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(json.get("warning").is_none(), "{body}");
+    assert_eq!(
+        fs::read_to_string(&arguments).unwrap(),
+        format!(
+            "crew\nmessage\n--from\nfrump\nAda\nTask {} is assigned to Ada.\n",
+            json["id"]
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(&board)
+            .unwrap()
+            .matches("Delivered fixture")
+            .count(),
+        1
+    );
     let _ = fs::remove_dir_all(root);
 }

@@ -20,7 +20,7 @@ Welcome to Frump! This tutorial will walk you through setting up and using Frump
 
 ### Authority workflow commands
 
-Use `frump init` to create an empty board, `frump unset` to remove stale properties, and `frump update --append-body` to retain review or validation evidence. `frump update --append-body-msg` also broadcasts the raw fragment to the Metateam crew after saving. Dependency properties use `Depends On: 1, 2`; run `frump validate`, `frump deps`, `frump dependents`, and `frump ready` to work safely with the dependency graph. `frump next 1 2` activates an ordered todo plan: only task 1 may leave `todo`, and completing it removes it from the plan. New statuses and similar new task subjects produce warnings but remain user-controlled.
+Use `frump init` to create an empty board, `frump unset` to remove stale properties, and `frump update --append-body` to retain review or validation evidence. `frump update --append-body-notify` also sends the raw fragment to the task's assignee through Metateam after saving, or to the whole crew when the task has no assignee. Dependency properties use `Depends On: 1, 2`; run `frump validate`, `frump deps`, `frump dependents`, and `frump ready` to work safely with the dependency graph. `frump next 1 2` activates an ordered todo plan: only task 1 may leave `todo`, and completing it removes it from the plan. New statuses and similar new task subjects produce warnings but remain user-controlled.
 
 ### Step 1: Build Frump
 
