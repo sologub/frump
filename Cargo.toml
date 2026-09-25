@@ -1,7 +1,7 @@
 [package]
 name = "frump"
 version = "0.1.0"
-authors = ["Ruslan Sologub <sologub@gmail.com>"]
+authors = ["Sologub <sologub@gmail.com>"]
 edition = "2021"
 description = "Distributed task management tool based on Git and Markdown"
 license = "MIT"
